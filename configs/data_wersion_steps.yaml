@@ -1,0 +1,29 @@
+# 装配步骤（step）数据集：step_0 → step_3 → 完整体
+# 标注工具：X-AnyLabeling，导出格式选 YOLO Detection（矩形框，整个装配体画一个框）
+# 用法：yolo detect train data=configs/data_wersion_steps.yaml model=weights/yolo26n.pt
+#
+# 目录约定：
+#   wersion_train/datasets/wersion_steps/
+#     images/train/*.jpg   labels/train/*.jpg.txt
+#     images/val/*.jpg     labels/val/*.jpg.txt
+
+path: D:\wang_robot\3_1\version_task\wersion_train\datasets\wersion_steps
+train: images/train
+val: images/val
+
+names:
+  0: step_0     # 空盘初始态：盘里什么都没有（只有盘本体）
+  1: step_1     # 盘里只有底部
+  2: step_2     # 底部 + 支撑柱
+  3: step_3     # 底部 + 支撑柱 + 罗盘
+  4: complete   # 完整体：盘 + 底部 + 支撑柱 + 罗盘 全部到位
+
+# 类别语义（按你的确认："step1 盘里只有底部"）：
+#   step_0  →  step_1 装底部  →  step_2 装支撑柱  →  step_3 装罗盘  →  complete 盘也装上
+#
+# 标注要点：
+#   · 每张图只标"当前处于哪个阶段"，同一个装配体只画一个框（框住整个装配体/料盘）。
+#   · 阶段之间样本量要均衡，否则模型会偏向样本最多的那一类；
+#     相邻阶段的困难样本（正装到一半）要单独采，这是最容易混的两类。
+#   · 若最终决定不要 complete 类而把完整体并入 step_3，直接删掉这一行并同步改
+#     wersion_train/classes_steps.txt 与标注。

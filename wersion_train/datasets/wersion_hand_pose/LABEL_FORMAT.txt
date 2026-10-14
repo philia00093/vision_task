@@ -1,0 +1,6 @@
+YOLO pose 标签格式（每张图一个同名 .txt）：
+  <class> <cx> <cy> <w> <h>  <x1> <y1> <v1>  <x2> <y2> <v2> ... <x21> <y21> <v21>
+  所有坐标都是相对整图宽高的 0~1 归一化值。
+  v: 0=未标/框外，1=标了但被遮挡，2=清晰可见。
+  21 点顺序见 configs/hand_keypoints_21.txt（MediaPipe 顺序）。
+X-AnyLabeling 导出时选 YOLO Pose 即可自动生成该格式。

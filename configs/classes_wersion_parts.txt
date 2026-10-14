@@ -1,0 +1,5 @@
+# 装配件（零件）类别：底部 / 支撑柱 / 盘 / 罗盘
+bottom            # 底部
+support_pillar    # 支撑柱
+tray              # 盘
+compass           # 罗盘
