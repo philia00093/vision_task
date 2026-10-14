@@ -25,9 +25,17 @@
     python test_run.py --detect-width 960               # 识别用 960 宽，提高帧率
     python test_run.py --green-lo 30 60 80 --min-area 0.01   # 光照不同时调绿色阈值
 热键：S 保存当前帧（含识别结果），Q / ESC 退出。
+
+路径规则：
+    · 项目根目录（权重 / configs / output 的基准）按以下顺序确定：
+      环境变量 VESION_TASK_ROOT → 脚本所在目录 → 向上找到带 weights/ 或 configs/ 的目录
+      → 当前工作目录。启动会打印实际用的根目录与输出目录。
+    · --source 给的相对路径先按当前工作目录找，找不到再按项目根目录找。
+    · --save-dir 的相对路径以项目根目录为基准，不存在会自动创建。
 """
 
 import argparse
+import os
 import time
 from datetime import datetime
 from pathlib import Path
@@ -37,7 +45,53 @@ import numpy as np
 
 from stereo_fusion import save_image, split_stereo
 
-ROOT = Path(__file__).resolve().parent
+def find_root(start: Path | None = None) -> Path:
+    """确定项目根目录：权重、configs、output 都以它为基准。
+
+    依次尝试：
+        1. 环境变量 VESION_TASK_ROOT —— 显式指定，只要目录存在就以它为准，优先级最高
+        2. 脚本所在目录（若其下有 weights/ 或 configs/）
+        3. 从脚本目录逐级向上找带 weights/ 或 configs/ 的目录
+        4. 当前工作目录
+        5. 兜底：脚本所在目录
+    """
+    # 1) 显式指定优先：存在即采纳，避免被脚本目录"抢答"
+    env = os.environ.get("VESION_TASK_ROOT")
+    if env:
+        candidate = Path(env).expanduser()
+        if candidate.is_dir():
+            return candidate.resolve()
+
+    here = (start or Path(__file__)).resolve().parent
+    # 2) + 3) 脚本目录及其各级父目录
+    for candidate in (here, *here.parents):
+        try:
+            if (candidate / "weights").is_dir() or (candidate / "configs").is_dir():
+                return candidate
+        except OSError:
+            continue
+    # 4) 当前工作目录
+    try:
+        cwd = Path.cwd()
+        if (cwd / "weights").is_dir() or (cwd / "configs").is_dir():
+            return cwd
+    except OSError:
+        pass
+    # 5) 兜底
+    return here
+
+
+def ensure_dir(path: Path, what: str = "目录") -> Path:
+    """确保目录存在；建不出来时给出可操作的报错，而不是让后面写到一半才失败。"""
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        raise SystemExit(f"无法创建{what}：{path}\n  原因：{error}\n"
+                         f"  可用 --save-dir 指定一个可写目录，或设置环境变量 VESION_TASK_ROOT")
+    return path
+
+
+ROOT = find_root()
 WINDOW = "Right Eye View"
 BACKENDS = {"auto": cv2.CAP_ANY, "dshow": cv2.CAP_DSHOW,
             "msmf": getattr(cv2, "CAP_MSMF", cv2.CAP_ANY)}
@@ -298,6 +352,14 @@ class ZoneTracker:
             groups[distances.index(min(distances))].append(box)
         return groups
 
+    def drawable(self) -> list[dict]:
+        """只返回已经有框的区域，供绘制使用。
+
+        区域是在第一次检测到绿色块时创建的，那一帧 box 还是 None；
+        直接解包 zone["box"] 会抛 TypeError: cannot unpack non-iterable NoneType。
+        """
+        return [z for z in self.zones if z["box"] is not None]
+
     def state_text(self, zone) -> str:
         """单个区域的遮挡状态（仅用于内部判断，不直接显示）。"""
         if not zone["occluded"]:
@@ -496,11 +558,18 @@ def main():
             raise SystemExit(f"--mode 格式应为 宽x高，例如 2560x960，收到 {args.mode!r}")
 
     # 视频源：--source 给的是视频/图片文件时走离线路径，否则开相机
-    source_path = Path(args.source) if args.source else None
+    source_path = Path(args.source).expanduser() if args.source else None
+    if source_path is not None:
+        # 相对路径按"当前工作目录"解析；找不到再试项目根目录，并打印解析结果
+        if not source_path.is_absolute() and not source_path.is_file():
+            source_path = ROOT / source_path
+        source_path = source_path.resolve()
     is_image = bool(source_path and source_path.suffix.lower() in IMAGE_SUFFIXES)
     is_video = bool(source_path and not is_image)
     if source_path and not source_path.is_file():
-        raise SystemExit(f"找不到文件：{source_path}")
+        raise SystemExit(f"找不到文件：{source_path}\n"
+                         f"  已按「当前目录」和「项目根 {ROOT}」查找过；"
+                         f"请检查路径或改用绝对路径")
 
     if is_image:
         frame0 = cv2.imdecode(np.fromfile(str(source_path), dtype=np.uint8), cv2.IMREAD_COLOR)
@@ -564,7 +633,12 @@ def main():
         print(f"区域标签：左→红框「物料区」，右→蓝框「装配区」"
               f"，中文字体 {'已载入' if label_font else '未找到（标签用拼音代替）'}")
 
-    save_dir = ROOT / args.save_dir
+    save_dir = Path(args.save_dir).expanduser()
+    if not save_dir.is_absolute():
+        save_dir = ROOT / save_dir
+    save_dir = ensure_dir(save_dir.resolve(), "输出目录")
+    print(f"项目根目录：{ROOT}")
+    print(f"输出目录  ：{save_dir}")
     show_window = (not args.snapshot) and not is_image and hasattr(cv2, "imshow")
     if show_window:
         cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
@@ -613,7 +687,7 @@ def main():
             if detect:
                 # 先占住状态栏区域拿到高度，区域标签与右上角提示据此避开顶部
                 status_height = draw_overlay(view, "")
-                for index, zone in enumerate(tracker_zones.zones):
+                for index, zone in enumerate(tracker_zones.drawable()):
                     x1, y1, x2, y2 = zone["box"]
                     color = ZONE_COLORS[index % len(ZONE_COLORS)]
                     draw_zone(view, x1, y1, x2, y2, zone["name"], color, font=label_font,
@@ -630,7 +704,7 @@ def main():
             status = (f"RIGHT EYE {view.shape[1]}x{view.shape[0]} {info['fourcc']} | "
                       f"fps {fps_now:.1f} | mean {brightness:.0f} | sharp {sharpness:.1f}")
             if detect:
-                status += f" | 绿区 {len(tracker_zones.zones)}"
+                status += f" | 绿区 {len(tracker_zones.drawable())}"
             # 状态栏就地画在 view 上并盖掉刚才的占位黑条；
             # draw_overlay 返回的是高度（int），图像仍是 view 本身
             draw_overlay(view, status)

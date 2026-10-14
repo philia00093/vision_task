@@ -65,7 +65,7 @@ wersion_train/
 └─ tools/                         抽帧 / 转换 / 划分 / 体检 / 建目录
 ```
 
-## 3. 现在就能跑（无需训练、无需装环境）
+## 3. 运行方式
 
 ```
 run_pipeline.bat --source "Left Eye View_screenshot_13.10.2026.png" --save
@@ -77,7 +77,6 @@ run_pipeline.bat --debug-green                                # 存绿色掩码�
 ### 区域识别：绿色分割（默认）
 
 料盘是纯色工装，直接 OpenCV 在 HSV 空间分割，**零训练**：左块 = 料盘区，右块 = 装配区。
-实测你这张图上两块板各自独立成块（`(164,19,280,365)` 与 `(534,19,255,337)`），框得很准。
 
 现场光照变了就调阈值，不用重新标数据：
 
@@ -90,33 +89,6 @@ run_pipeline.bat --merge-gap 40                               # 料盘被反光�
 识别不到两块时自动几何兜底（`--split-ratio`）并在画面顶部红字提示，不会静默出错。
 要换回训练模型：`--no-green --region weights/region_best.pt`。
 
-### 手部：21 关键点姿态模型 + 跟踪
-
-`weights/yolo26n-pose-21kpt.pt` 由 [build_hand_model.py](wersion_train/tools/build_hand_model.py) 生成：
-从官方 `yolo26-pose.yaml` 派生配置（只改 `kpt_shape` 为 `[21,3]`、`nc` 为 1），
-再把 17 点权重里形状匹配的部分迁移过来（795/879 项），并补上 `kpt_shape`/`kpt_names`/`names` 元数据。
-
-```
-run_pipeline.bat --hand weights/yolo26n-pose-21kpt.pt --hand-conf 0.25
-```
-
-**要如实说明的一点**：关键点分支是按 21 点**新建且尚未训练**的，所以画出来的 21 个点是
-随机的，不是真实指节位置；**手部检测框与跟踪 ID 是有效的**（来自迁移过来的主干权重，
-实测在真实照片上稳定检出多只手并给出 ID）。要让 21 点变准，只有一个办法：
-标 `configs/data_hand_pose.yaml` → 训练。检测框现在就能用于"手在哪个区"的判断。
-
-## 4. 标注 → 训练 流程
-
-1. **抽帧**：`python wersion_train/tools/extract_frames.py --source 视频.mp4 --every 10`
-2. **标注**：X-AnyLabeling 打开图片目录
-   - 零件/区域/步骤 → 矩形框，导出 **YOLO Detection**
-   - 手部关键点 → 手部 21 点模板，导出 **YOLO Pose**
-   - 导出统一丢到 `wersion_train/annotations/`
-3. **转换**：`python wersion_train/tools/convert_anylabeling.py --data wersion_parts`
-4. **划分**：`python wersion_train/tools/split_dataset.py --data wersion_parts`
-5. **体检**：`python wersion_train/tools/check_labels.py --data wersion_parts`
-6. **训练**：`python wersion_train/train_detect.py --data wersion_parts`（步骤用 `wersion_steps`）
-7. **用起来**：`run_pipeline.bat --region <best.pt> --step <best.pt>`
 
 ## 5. 类别语义（重要）
 
@@ -129,19 +101,3 @@ run_pipeline.bat --hand weights/yolo26n-pose-21kpt.pt --hand-conf 0.25
 | | step_2 | 底部 + 支撑柱 |
 | | step_3 | 底部 + 支撑柱 + 罗盘 |
 | | complete | 完整体（盘 + 底部 + 支撑柱 + 罗盘） |
-| hand_pose | hand（21 关键点） | MediaPipe 顺序，见 `configs/hand_keypoints_21.txt` |
-
-## 6. 关于权重与手部关键点
-
-- `weights/yolo26n.pt`：检测预训练权重，训练零件/步骤/区域都用它做起点。
-- `weights/yolo26n-pose.pt`：COCO 人体 **17** 点姿态权重（官方原版）。
-- `weights/yolo26n-pose-21kpt.pt`：本项目生成的**手部 21 点**模型文件（结构 21 点、
-  关键点分支未训练），可重新生成：`python wersion_train/tools/build_hand_model.py`。
-
-Ultralytics 只发布带尺寸后缀的权重（`yolo26n/s/m/l/x.pt`），**没有 `yolo26.pt` 这个文件**。
-
-## 7. 运行环境
-
-本机已有 `yolo26` 环境（Python 3.11 / torch 2.8.0+cu128 / ultralytics 8.4.157），
-`run_pipeline.bat` 与 `wersion_train\tools\*.bat` 都已指向它，无需再配环境。
-所有脚本只用标准库 + 已装好的 numpy / opencv / ultralytics / torch。
