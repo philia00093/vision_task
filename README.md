@@ -19,7 +19,7 @@ vision_task/
    ├─ paths.py                   ★ 统一路径定义，所有脚本都从这里取路径
    ├─ tools/                     抽帧 / 转换标注 / 划分 / 体检 / 下权重 / 建骨架
    ├─ configs/                   数据集 yaml 与类别表
-   ├─ weights/                   预训练权重（.pt 已 gitignore，用脚本重下）
+   ├─ weights/                   预训练权重：yolo26n.pt（已随仓库提供，开箱即用）
    ├─ images/                    ★ 待标注图片总目录
    │  ├─ parts/                  零件识别：底部 / 支撑柱 / 盘 / 罗盘
    │  └─ steps/                  步骤识别：step_0~3 / complete
@@ -38,13 +38,24 @@ vision_task/
 其余脚本不再各写 `parents[N]`，脚本挪位置也不会断路径。
 想看解析结果：`python vision_yolo_train/paths.py`
 
-## 2. 克隆后先补权重（仓库不含 .pt）
+## 2. 预训练权重（已随仓库提供）
+
+`vision_yolo_train/weights/yolo26n.pt`（5.3 MB，YOLO26 nano）**已经在仓库里，克隆即可训练**，
+不需要额外下载。训练入口默认就用它：
+
+```bash
+python vision_yolo_train/train_detect.py --data wersion_parts     # 默认 --model = weights/yolo26n.pt
+```
+
+权重丢了或想重新拉取时：
 
 ```bash
 python vision_yolo_train/tools/download_weights.py
 ```
 
-会下到 `vision_yolo_train/weights/yolo26n.pt`（检测训练用的预训练权重）。
+> 说明：Ultralytics 只发布带尺寸后缀的权重（`yolo26n/s/m/l/x.pt`），
+> **没有名为 `yolo26.pt` 的文件**。要更大的主干用
+> `download_weights.py --models yolo26s.pt`，再 `train_detect.py --model .../yolo26s.pt`。
 
 ## 3. 直接运行（无需训练）
 
