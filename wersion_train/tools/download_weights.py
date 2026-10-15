@@ -5,8 +5,6 @@
     或  D:\\anaconda3\\envs\\yolo26\\python.exe scripts\\download_weights.py
 
 默认只拉两个检测权重：yolo26n.pt（训练主力）和 yolo26.pt（大模型，精度上限参考）。
-加 --pose 额外拉 yolo26n-pose.pt，用于手部 21 关键点训练（COCO 人体姿态预训练权重，
-关键点分支会被重建为 21 点，但主干特征仍是有效的预训练起点）。
 
 已存在的文件默认跳过，--force 可强制重下。
 """
@@ -23,7 +21,6 @@ WEIGHTS = ROOT / "weights"
 
 # ultralytics 会从 GitHub release 拉取；已存在同名文件时也会跳过，这里再兜一层显式控制
 DEFAULT_MODELS = ["yolo26n.pt", "yolo26.pt"]
-POSE_MODELS = ["yolo26n-pose.pt"]
 
 
 def human(size: int) -> str:
@@ -100,8 +97,6 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="下载 YOLO26 预训练权重")
     parser.add_argument("--models", nargs="*", default=None,
                         help=f"自定义权重名，默认 {DEFAULT_MODELS}")
-    parser.add_argument("--pose", action="store_true",
-                        help=f"额外下载姿态权重 {POSE_MODELS}（手部关键点训练用）")
     parser.add_argument("--force", action="store_true", help="已存在也重新下载")
     args = parser.parse_args()
 
@@ -110,8 +105,6 @@ def main() -> int:
     verify_hand_keypoint_support()
 
     names = list(args.models) if args.models else list(DEFAULT_MODELS)
-    if args.pose:
-        names += POSE_MODELS
 
     ok, failed = [], []
     for name in names:

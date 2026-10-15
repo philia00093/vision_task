@@ -24,7 +24,6 @@ sys.path.insert(0, str(ROOT))
 DATASETS = {
     "wersion_parts": ROOT / "configs" / "data_wersion_parts.yaml",
     "wersion_steps": ROOT / "configs" / "data_wersion_steps.yaml",
-    "wersion_regions": ROOT / "configs" / "data_regions.yaml",
 }
 DEFAULT_WEIGHTS = ROOT / "weights" / "yolo26n.pt"
 
@@ -32,7 +31,7 @@ DEFAULT_WEIGHTS = ROOT / "weights" / "yolo26n.pt"
 def main() -> int:
     parser = argparse.ArgumentParser(description="YOLO26n 检测训练")
     parser.add_argument("--data", default="wersion_parts",
-                        help="数据集名（wersion_parts / wersion_steps / wersion_regions）")
+                        help="数据集名（wersion_parts（零件）/ wersion_steps（步骤））")
     parser.add_argument("--yaml", default=None, help="直接指定 data yaml，覆盖 --data")
     parser.add_argument("--model", default=str(DEFAULT_WEIGHTS),
                         help="起始权重；默认 wersion_train/weights/yolo26n.pt（nano）")
@@ -77,7 +76,7 @@ def main() -> int:
         resume=args.resume, cache=args.cache, seed=args.seed, exist_ok=True, **overrides)
 
     print(f"\n[完成] 权重在 {ROOT / 'wersion_train' / 'runs' / (args.name or args.data)}/wersion_train/weights/")
-    print("       用起来：run_pipeline.bat --region <best.pt> --step <best.pt>")
+    print("       用起来：python train_detect.py --data wersion_steps  继续训步骤模型")
     return 0
 
 

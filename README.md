@@ -14,20 +14,15 @@
 vesion_task/
 ├─ test_run.py             ★ 主程序：右目预览 + 绿色区域识别 + 工位状态
 ├─ stereo_fusion.py        双目拆帧与图像读写（中文路径安全）
-├─ run_pipeline.bat        视觉流水线（绿色区域 + 手部跟踪）
-├─ run_hand_green.bat      精简版（只做绿色区域 + 手）
 ├─ output/                 运行输出（已 gitignore）
 └─ wersion_train/          ★ 全部 YOLO 训练相关
    ├─ src/train_detect.py      训练入口（YOLO26n 检测）
    ├─ tools/                   抽帧 / 转换标注 / 划分 / 体检 / 下权重
-   ├─ vision/                  视觉流水线源码包（region / hand / stream / draw）
    ├─ configs/                 数据集 yaml、类别表、跟踪器配置
    ├─ weights/                 预训练权重（.pt 已 gitignore，用脚本重下）
    ├─ datasets/                YOLO 数据集（images/{train,val,raw} + labels/...）
    │  ├─ wersion_parts/        零件识别数据集
    │  ├─ wersion_steps/        步骤识别数据集
-   │  ├─ regions/              区域数据集
-   │  └─ hand_pose/            手部 21 关键点数据集
    ├─ images/                  ★ 训练图片总目录
    │  ├─ parts/                零件识别用图（底部 / 支撑柱 / 盘 / 罗盘）
    │  └─ steps/                步骤识别用图（step_0~3 / complete）
@@ -42,17 +37,16 @@ vesion_task/
 ## 2. 克隆后先补权重（仓库不含 .pt）
 
 ```bash
-python wersion_train/tools/download_weights.py --pose
+python wersion_train/tools/download_weights.py
 ```
 
-会下到 `wersion_train/weights/`：`yolo26n.pt`（检测训练用）、`yolo26n-pose.pt`。
+会下到 `wersion_train/weights/yolo26n.pt`（检测训练用的预训练权重）。
 
 ## 3. 直接运行（无需训练）
 
 ```bash
 python test_run.py                                            # 实时相机
 python test_run.py --source wersion_train\images\parts\test_1.png --save
-run_pipeline.bat --source wersion_train\images\parts\test_1.png --save
 ```
 
 热键：`S` 保存当前帧（含识别结果），`Q` / `ESC` 退出。
@@ -87,11 +81,7 @@ python wersion_train/src/train_detect.py --data wersion_parts
 #    步骤识别同理：--data wersion_steps
 ```
 
-训练产物在 `wersion_train/runs/<数据集>/weights/best.pt`，用起来：
-
-```bash
-run_pipeline.bat --region wersion_train\runs\wersion_parts\weights\best.pt
-```
+训练产物在 `wersion_train/runs/<数据集>/weights/best.pt`。
 
 ## 5. 类别语义
 
@@ -99,8 +89,6 @@ run_pipeline.bat --region wersion_train\runs\wersion_parts\weights\best.pt
 |---|---|
 | 零件（wersion_parts） | bottom 底部 / support_pillar 支撑柱 / tray 盘 / compass 罗盘 |
 | 步骤（wersion_steps） | step_0 空盘 → step_1 只有底部 → step_2 +支撑柱 → step_3 +罗盘 → complete 完整体 |
-| 区域（regions） | tray_area 料盘区 / assembly_area 装配区 / hand |
-| 手部（hand_pose） | hand，21 关键点（MediaPipe 顺序，见 `configs/hand_keypoints_21.txt`） |
 
 ## 6. 运行环境
 
@@ -108,4 +96,4 @@ run_pipeline.bat --region wersion_train\runs\wersion_parts\weights\best.pt
 两个 `.bat` 已指向 `D:\anaconda3\envs\yolo26\python.exe`，换机器改里面的 `PY` 变量即可。
 
 `test_run.py` 只用标准库 + numpy + opencv + PIL（画中文标签），**不加载任何模型**；
-视觉流水线（`wersion_train/vision/`）才需要 ultralytics。
+只有训练脚本（`wersion_train/src`、`wersion_train/tools`）需要 ultralytics。

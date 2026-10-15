@@ -8,12 +8,9 @@
 JSON 里识别这些形状：
     rectangle   → 检测框（label 必须是本数据集已知类别）
     polygon     → 取外接矩形当检测框（如果你用了分割标注）
-    带 keypoints 的形状 → YOLO pose 标签（21 点，见 wersion_train/configs/hand_keypoints_21.txt）
 
 用法：
     python wersion_train/tools/convert_anylabeling.py --data wersion_parts
-    python wersion_train/tools/convert_anylabeling.py --data wersion_hand_pose \
-        --src wersion_train/annotations
     python wersion_train/tools/convert_anylabeling.py --data wersion_steps --dry-run
 
 输出：
@@ -127,8 +124,7 @@ def convert_json(json_path: Path, names: list[str], pose: bool
 def main() -> int:
     parser = argparse.ArgumentParser(description="X-AnyLabeling → YOLO 标签转换")
     parser.add_argument("--data", required=True,
-                        help="数据集名：wersion_parts / wersion_steps / wersion_regions / "
-                             "wersion_hand_pose")
+                        help="数据集名：wersion_parts（零件）/ wersion_steps（步骤）")
     parser.add_argument("--src", default=None,
                         help="标注所在目录；默认自动找 wersion_train/annotations 与 "
                              "wersion_train/<parts|steps>/<类别>")
@@ -144,7 +140,7 @@ def main() -> int:
         print(f"[错误] 找不到类别表 {classes_file}；先跑 init_datasets.bat")
         return 2
     names = read_names(classes_file)
-    pose = args.data == "wersion_hand_pose"
+    pose = False            # 手部 pose 数据集已移除，只做检测框转换
     print(f"[数据集] {args.data}（{'pose' if pose else 'detect'}）类别 {names}")
 
     # 找标注来源

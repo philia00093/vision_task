@@ -25,7 +25,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 WERSION = ROOT / "wersion_train"
 
-DATASETS = ("wersion_regions", "wersion_parts", "wersion_steps", "wersion_hand_pose")
+DATASETS = ("wersion_parts", "wersion_steps")
 PARTS = ("bottom", "support_pillar", "tray", "compass")
 STEPS = ("step_0", "step_1", "step_2", "step_3", "complete")
 

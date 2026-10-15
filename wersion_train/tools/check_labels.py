@@ -5,7 +5,6 @@
 
 用法：
     python wersion_train/tools/check_labels.py --data wersion_parts
-    python wersion_train/tools/check_labels.py --data wersion_hand_pose --strict
     python wersion_train/tools/check_labels.py --data wersion_steps --fix    # 顺手清理坏行
 
 退出码：0 正常；1 有错误（--strict 时连警告也算失败）。
@@ -157,8 +156,6 @@ def main() -> int:
     yaml_map = {
         "wersion_parts": ROOT / "configs" / "data_wersion_parts.yaml",
         "wersion_steps": ROOT / "configs" / "data_wersion_steps.yaml",
-        "wersion_regions": ROOT / "configs" / "data_regions.yaml",
-        "wersion_hand_pose": ROOT / "configs" / "data_hand_pose.yaml",
     }
     yaml_path = Path(args.yaml) if args.yaml else yaml_map.get(args.data)
     names = read_names_from_yaml(yaml_path) if yaml_path else []
@@ -168,7 +165,7 @@ def main() -> int:
             names = [ln.split("#", 1)[0].strip() for ln in
                      class_file.read_text(encoding="utf-8").splitlines()
                      if ln.split("#", 1)[0].strip()]
-    pose = args.data == "wersion_hand_pose"
+    pose = False            # 手部 pose 数据集已移除，只做检测
 
     print(f"[体检] {args.data}（{'pose 21 点' if pose else 'detect'}）")
     print(f"       类别：{names or '未找到（只做格式检查）'}")

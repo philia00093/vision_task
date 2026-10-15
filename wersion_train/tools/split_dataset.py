@@ -6,7 +6,6 @@
 用法：
     python wersion_train/tools/split_dataset.py --data wersion_parts
     python wersion_train/tools/split_dataset.py --data wersion_steps --val-ratio 0.2 --seed 0
-    python wersion_train/tools/split_dataset.py --data wersion_hand_pose --move   # 移动而非复制
 
 默认复制（原图留在 images/raw 里方便回看）；--move 省磁盘。
 同时会重写 wersion_train/configs/data_<name>.yaml 的 train/val/path，保证训练脚本拿到正确路径。
@@ -31,8 +30,6 @@ IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
 YAML_FOR = {
     "wersion_parts": ROOT / "configs" / "data_wersion_parts.yaml",
     "wersion_steps": ROOT / "configs" / "data_wersion_steps.yaml",
-    "wersion_regions": ROOT / "configs" / "data_regions.yaml",
-    "wersion_hand_pose": ROOT / "configs" / "data_hand_pose.yaml",
 }
 
 
