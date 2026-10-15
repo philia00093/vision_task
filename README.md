@@ -68,7 +68,7 @@ wersion_train/
 ## 3. 运行方式
 
 ```
-run_pipeline.bat --source "Left Eye View_screenshot_13.10.2026.png" --save
+run_pipeline.bat --source "test_1.png" --save
 run_pipeline.bat --source 0                                   # 实时相机预览，Q 退出
 run_pipeline.bat --source test.mp4 --loop --save --log-events
 run_pipeline.bat --debug-green                                # 存绿色掩码到 output/green/
