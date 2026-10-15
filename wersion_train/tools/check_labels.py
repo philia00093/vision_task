@@ -220,7 +220,7 @@ def main() -> int:
     failed = bool(all_problems) or (args.strict and bool(all_warnings))
     print("\n[结论] " + ("不通过，先修上面的错误" if failed else "通过，可以开训"))
     if not failed:
-        print(f"        python wersion_train/train_detect.py --data {args.data}")
+        print(f"        python wersion_train/src/train_detect.py --data {args.data}")
         if pose:
             print(f"        python wersion_train/train_pose.py --data {args.data}")
     return 1 if failed else 0

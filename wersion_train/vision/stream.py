@@ -15,6 +15,9 @@ import time
 from pathlib import Path
 
 import cv2
+import numpy as np
+
+from .common import ROOT
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # 让 import stereo_fusion 生效
 
@@ -29,9 +32,29 @@ IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
 class StreamReader:
     """统一封装相机 / 视频文件 / 单张图片的逐帧读取。"""
 
+    @staticmethod
+    def _resolve_source(source) -> str:
+        """解析视频源路径。
+
+        相机序号（纯数字）原样返回。文件路径先按当前工作目录找，
+        找不到再按项目根（wersion_train/）找 —— 因为 run_pipeline.bat 会
+        pushd 到 wersion_train 运行，用户给的相对路径可能是相对项目根的。
+        """
+        text = str(source)
+        if text.isdigit():
+            return text
+        candidate = Path(text).expanduser()
+        if candidate.is_file():
+            return str(candidate)
+        if not candidate.is_absolute():
+            fallback = ROOT / candidate
+            if fallback.is_file():
+                return str(fallback)
+        return str(candidate)
+
     def __init__(self, source="0", backend="dshow", width=0, height=0, fps=0,
                  fourcc="MJPG", buffersize=1, layout="auto", loop=False, warmup=0):
-        self.source = str(source)
+        self.source = self._resolve_source(source)
         self.loop = loop
         self.warmup = max(0, int(warmup))
         self.layout = layout
@@ -44,7 +67,7 @@ class StreamReader:
 
         if self.is_image:
             self._image = cv2.imdecode(
-                __import__("numpy").fromfile(self.source, dtype="uint8"), cv2.IMREAD_COLOR)
+                np.fromfile(self.source, dtype="uint8"), cv2.IMREAD_COLOR)
             if self._image is None:
                 raise RuntimeError(f"图片读取失败：{self.source}")
             return

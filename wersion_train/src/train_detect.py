@@ -1,12 +1,12 @@
 """用 YOLO26n 训练检测模型（零件 / 步骤 / 区域 都用这一个入口）。
 
-不配环境、不改全局设置，只读 configs/data_<name>.yaml 并调用 ultralytics。
+不配环境、不改全局设置，只读 wersion_train/configs/data_<name>.yaml 并调用 ultralytics。
 
 用法：
-    python wersion_train/train_detect.py --data wersion_parts
-    python wersion_train/train_detect.py --data wersion_steps --epochs 300 --imgsz 960
-    python wersion_train/train_detect.py --data wersion_parts --model weights/yolo26s.pt
-    python wersion_train/train_detect.py --data wersion_parts --resume
+    python wersion_train/src/train_detect.py --data wersion_parts
+    python wersion_train/src/train_detect.py --data wersion_steps --epochs 300 --imgsz 960
+    python wersion_train/src/train_detect.py --data wersion_parts --model wersion_train/weights/yolo26s.pt
+    python wersion_train/src/train_detect.py --data wersion_parts --resume
 
 默认参数按 8G 显存（RTX 5060 Laptop）给：imgsz 640、batch 8。
 零件小、步骤细，识别不准时优先把 imgsz 提到 960 并补困难样本。
@@ -18,7 +18,7 @@ import argparse
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[1]   # = wersion_train/
 sys.path.insert(0, str(ROOT))
 
 DATASETS = {
@@ -35,7 +35,7 @@ def main() -> int:
                         help="数据集名（wersion_parts / wersion_steps / wersion_regions）")
     parser.add_argument("--yaml", default=None, help="直接指定 data yaml，覆盖 --data")
     parser.add_argument("--model", default=str(DEFAULT_WEIGHTS),
-                        help="起始权重；默认 weights/yolo26n.pt（nano）")
+                        help="起始权重；默认 wersion_train/weights/yolo26n.pt（nano）")
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--imgsz", type=int, default=640, help="小零件建议 960")
     parser.add_argument("--batch", type=int, default=8, help="-1=自动")
@@ -55,7 +55,7 @@ def main() -> int:
         print(f"[错误] 找不到数据配置：{data_yaml}；可选 {list(DATASETS)}")
         return 2
     if not Path(args.model).is_file():
-        print(f"[错误] 找不到权重 {args.model}；先跑 scripts/download_weights.bat")
+        print(f"[错误] 找不到权重 {args.model}；先跑 wersion_train/tools/download_weights.bat")
         return 2
 
     from ultralytics import YOLO
@@ -76,7 +76,7 @@ def main() -> int:
         project=str(ROOT / "wersion_train" / "runs"), name=args.name or args.data,
         resume=args.resume, cache=args.cache, seed=args.seed, exist_ok=True, **overrides)
 
-    print(f"\n[完成] 权重在 {ROOT / 'wersion_train' / 'runs' / (args.name or args.data)}/weights/")
+    print(f"\n[完成] 权重在 {ROOT / 'wersion_train' / 'runs' / (args.name or args.data)}/wersion_train/weights/")
     print("       用起来：run_pipeline.bat --region <best.pt> --step <best.pt>")
     return 0
 

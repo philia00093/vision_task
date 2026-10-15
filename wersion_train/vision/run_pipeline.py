@@ -6,7 +6,7 @@
     run_pipeline.bat --source test.mp4 --loop --save --log-events
     run_pipeline.bat --debug-green                                 # 存绿色掩码，调阈值用
     run_pipeline.bat --green-lo 30 60 80 --min-area 0.01           # 光照不同时调阈值
-    run_pipeline.bat --no-green --region weights/region_best.pt    # 改用训练出的区域模型
+    run_pipeline.bat --no-green --region wersion_train/weights/region_best.pt    # 改用训练出的区域模型
 
 区域识别默认走绿色分割（纯 OpenCV，零训练）；识别不到两块料盘时自动几何兜底，
 并在画面顶部用红字提示，不会静默出错。
@@ -23,7 +23,7 @@ from pathlib import Path
 
 import cv2
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[1]   # = wersion_train/
 sys.path.insert(0, str(ROOT))
 
 # 控制台按 UTF-8 输出，避免中文提示在 cmd/批处理里变乱码
@@ -33,10 +33,10 @@ for _stream in (sys.stdout, sys.stderr):
     except Exception:
         pass
 
-from src.common import OUTPUT, WEIGHTS, ensure_dirs, save_image  # noqa: E402
-from src.modules.green_regions import GreenConfig  # noqa: E402
-from src.modules.pipeline import VisionPipeline  # noqa: E402
-from src.stream import FpsMeter, StreamReader  # noqa: E402
+from vision.common import OUTPUT, WEIGHTS, ensure_dirs, save_image  # noqa: E402
+from vision.modules.green_regions import GreenConfig  # noqa: E402
+from vision.modules.pipeline import VisionPipeline  # noqa: E402
+from vision.stream import FpsMeter, StreamReader  # noqa: E402
 
 WINDOW = "Version Task Pipeline"
 
@@ -81,7 +81,7 @@ def build_parser() -> argparse.ArgumentParser:
     model.add_argument("--region", default=None,
                        help="区域检测权重（料盘区/装配区/hand）；给了就用模型，不用绿色分割")
     model.add_argument("--hand", default=None,
-                       help="手部权重（默认 weights/yolo26n-pose.pt）")
+                       help="手部权重（默认 wersion_train/weights/yolo26n-pose.pt）")
     model.add_argument("--step", default=None, help="装配步骤检测权重（可选）")
     model.add_argument("--tracker",
                        default=str(ROOT / "configs" / "trackers" / "bytetrack.yaml"),
@@ -128,8 +128,8 @@ def main() -> int:
     ensure_dirs()
 
     if args.hand is None and not (WEIGHTS / "yolo26n-pose.pt").is_file():
-        print("[警告] 没找到 weights/yolo26n-pose.pt；"
-              "先跑 scripts/download_weights.bat --pose，或用 --hand 指定权重")
+        print("[警告] 没找到 wersion_train/weights/yolo26n-pose.pt；"
+              "先跑 wersion_train/tools/download_weights.bat --pose，或用 --hand 指定权重")
 
     try:
         reader = StreamReader(source=args.source, backend=args.backend, width=args.width,

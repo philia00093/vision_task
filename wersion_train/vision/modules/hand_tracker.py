@@ -11,7 +11,7 @@
         当前检测模型里若有 hand 类，就只保留 hand 类，其余类交给区域检测去处理。
 
 注意：Ultralytics 没有官方手部关键点预训练权重。要拿到稳定的 21 点，
-必须用 X-AnyLabeling 标手部 21 点 → configs/data_hand_pose.yaml → yolo pose train
+必须用 X-AnyLabeling 标手部 21 点 → wersion_train/configs/data_hand_pose.yaml → yolo pose train
 训练出自有权重（见 wersion_train/README.md）。
 """
 
@@ -45,7 +45,7 @@ class HandObservation:
 class HandTracker:
     """封装 model.track(persist=True)，把结果转成 HandObservation 列表。"""
 
-    def __init__(self, weights=None, tracker: str = "configs/trackers/bytetrack.yaml",
+    def __init__(self, weights=None, tracker: str = "wersion_train/configs/trackers/bytetrack.yaml",
                  conf: float = 0.35, iou: float = 0.5, imgsz: int = 640,
                  device: str | None = None, verbose: bool = False):
         # 不指定权重时用 21 点姿态模型；自训练权重（best.pt）在名字上看不出任务，

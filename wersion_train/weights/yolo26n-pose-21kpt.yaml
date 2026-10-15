@@ -1,6 +1,6 @@
 # 手部 21 关键点 YOLO26 姿态模型配置（由 wersion_train/tools/build_hand_model.py 生成）
 # 派生自官方 yolo26-pose.yaml，仅覆盖 scale / nc / kpt_shape
-# kpt_shape: [21, 3] —— 21 点顺序见 configs/hand_keypoints_21.txt
+# kpt_shape: [21, 3] —— 21 点顺序见 wersion_train/configs/hand_keypoints_21.txt
 nc: 1
 end2end: true
 reg_max: 1

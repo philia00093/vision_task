@@ -1,7 +1,7 @@
 # 手部 21 关键点数据集（YOLO Pose 格式）
 # 标注工具：X-AnyLabeling 的手部关键点模板（21 点，与 MediaPipe 一致），
 #           导出格式选 YOLO Pose。
-# 用法：yolo pose train data=configs/data_hand_pose.yaml model=weights/yolo26n-pose.pt
+# 用法：yolo pose train data=wersion_train/configs/data_hand_pose.yaml model=wersion_train/weights/yolo26n-pose.pt
 #
 # 重要：Ultralytics 没有官方"手部关键点"预训练权重。
 #   官方 hand-keypoints 数据集（26k 张，COCO 格式，keypoints: 21）是要自己从头训练的；
@@ -10,13 +10,10 @@
 #   标注必须用 X-AnyLabeling 手工标，不能指望现成的手部关键点模型自动标。
 #
 # 目录约定：
-#   data/hand_pose/
+#   wersion_train/datasets/hand_pose/
 #     images/train/*.jpg   labels/train/*.txt     ← YOLO pose 标签（框 + 21×(x,y,v)）
 #     images/val/*.jpg     labels/val/*.txt
 
-path: D:\wang_robot\3_1\version_task\data\hand_pose
-train: images/train
-val: images/val
 
 kpt_shape: [21, 3]   # 21 个关键点，每个 (x, y, visible)
 
@@ -38,3 +35,7 @@ names:
 #   · 手部关键点数据量需求远大于检测：起步建议 ≥ 1500 张，覆盖张开/捏取/握拳/侧向。
 #   · 手势被零件遮挡的部分按 v=1 标，别硬猜坐标。
 #   · pose 训练显存占用比检测高，8G 卡上 imgsz 先用 640、batch 8 试。
+
+path: D:\wang_robot\3_1\version_task\vesion_task\wersion_train\datasets\hand_pose
+train: images/train
+val: images/val

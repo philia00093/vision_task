@@ -3,7 +3,7 @@
 三条路径，按可靠性排序：
     1. 绿色分割（默认，推荐）：料盘是纯色工装，用 OpenCV 在 HSV 空间直接分割，
        零样本零训练，左块=料盘区、右块=装配区。见 green_regions.py；
-    2. 模型路径：用 configs/data_regions.yaml 训练出的检测模型给出
+    2. 模型路径：用 wersion_train/configs/data_regions.yaml 训练出的检测模型给出
        tray_area / assembly_area / hand 三类框；
     3. 几何兜底：上面都不用时，用 --split-ratio 在中线附近切两半，
        保证流水线不会因为找不到料盘而停。

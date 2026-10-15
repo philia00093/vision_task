@@ -1,15 +1,12 @@
 # 装配件（零件）数据集：底部 / 支撑柱 / 盘 / 罗盘
 # 标注工具：X-AnyLabeling，导出格式选 YOLO Detection（矩形框）
-# 用法：yolo detect train data=configs/data_wersion_parts.yaml model=weights/yolo26n.pt
+# 用法：yolo detect train data=wersion_train/configs/data_wersion_parts.yaml model=wersion_train/weights/yolo26n.pt
 #
 # 目录约定：
 #   data/wersion_parts/  （或 wersion_train/datasets/wersion_parts/）
 #     images/train/*.jpg   labels/train/*.jpg.txt
 #     images/val/*.jpg     labels/val/*.jpg.txt
 
-path: D:\wang_robot\3_1\version_task\wersion_train\datasets\wersion_parts
-train: images/train
-val: images/val
 
 names:
   0: bottom          # 底部
@@ -21,3 +18,7 @@ names:
 #   · 四类零件建议每类 ≥ 300 个实例，且必须包含"被手遮挡一半"和"只露一角"的困难样本，
 #     否则模型在实时装配视频里会漏检。
 #   · 同类零件在不同工位/不同光照下都要采；零件很小，训练时 imgsz 建议 960 起。
+
+path: D:\wang_robot\3_1\version_task\vesion_task\wersion_train\datasets\wersion_parts
+train: images/train
+val: images/val

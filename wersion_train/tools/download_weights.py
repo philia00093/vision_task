@@ -1,4 +1,4 @@
-"""下载 YOLO26 预训练权重到 weights/。
+"""下载 YOLO26 预训练权重到 wersion_train/weights/。
 
 用法（必须用 yolo26 环境，别用 base）：
     使用 download_weights.bat
@@ -18,7 +18,7 @@ import shutil
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[1]   # = wersion_train/
 WEIGHTS = ROOT / "weights"
 
 # ultralytics 会从 GitHub release 拉取；已存在同名文件时也会跳过，这里再兜一层显式控制
@@ -35,7 +35,7 @@ def human(size: int) -> str:
 
 
 def find_weight(name: str) -> Path | None:
-    """权重可能被 ultralytics 落在 weights/、项目根或 cwd，逐处查找。
+    """权重可能被 ultralytics 落在 wersion_train/weights/、项目根或 cwd，逐处查找。
 
     attempt_download_asset 在部分版本里返回裸文件名而不是真实路径，
     所以下载后必须以磁盘实际情况为准，不能相信返回值。
@@ -62,15 +62,15 @@ def download(name: str, force: bool = False, tag: str = "v8.4.0") -> Path | None
         ul_download(url, dir=WEIGHTS)
     except Exception as error:  # 网络/代理/404 都落到这里，给出可操作提示
         print(f"[失败] {name}：{error}")
-        print("       可手动下载后放入 weights/ ："
+        print("       可手动下载后放入 wersion_train/weights/ ："
               f"https://github.com/ultralytics/assets/releases 里的 {name}")
         return None
 
     path = find_weight(name)
     if path is None:
-        print(f"[失败] {name}：下载调用未报错，但 weights/ 下没有找到该文件")
+        print(f"[失败] {name}：下载调用未报错，但 wersion_train/weights/ 下没有找到该文件")
         return None
-    if path != WEIGHTS / name:  # 落错位置就搬回 weights/
+    if path != WEIGHTS / name:  # 落错位置就搬回 wersion_train/weights/
         target = WEIGHTS / name
         shutil.move(str(path), str(target))
         path = target

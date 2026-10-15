@@ -9,7 +9,7 @@
     python wersion_train/tools/split_dataset.py --data wersion_hand_pose --move   # 移动而非复制
 
 默认复制（原图留在 images/raw 里方便回看）；--move 省磁盘。
-同时会重写 configs/data_<name>.yaml 的 train/val/path，保证训练脚本拿到正确路径。
+同时会重写 wersion_train/configs/data_<name>.yaml 的 train/val/path，保证训练脚本拿到正确路径。
 """
 
 from __future__ import annotations

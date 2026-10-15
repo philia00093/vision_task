@@ -8,7 +8,7 @@
 JSON 里识别这些形状：
     rectangle   → 检测框（label 必须是本数据集已知类别）
     polygon     → 取外接矩形当检测框（如果你用了分割标注）
-    带 keypoints 的形状 → YOLO pose 标签（21 点，见 configs/hand_keypoints_21.txt）
+    带 keypoints 的形状 → YOLO pose 标签（21 点，见 wersion_train/configs/hand_keypoints_21.txt）
 
 用法：
     python wersion_train/tools/convert_anylabeling.py --data wersion_parts

@@ -13,17 +13,18 @@ import cv2
 import numpy as np
 
 _env_root = os.environ.get("VERSION_TASK_ROOT")
-ROOT = Path(_env_root).expanduser().resolve() if _env_root else Path(__file__).resolve().parents[1]
+ROOT = (Path(_env_root).expanduser().resolve() if _env_root
+       else Path(__file__).resolve().parents[1])   # = wersion_train/
 
 CONFIGS = ROOT / "configs"
-DATA = ROOT / "data"
 WEIGHTS = ROOT / "weights"
 RUNS = ROOT / "runs"
 OUTPUT = ROOT / "output"
-WERSION_TRAIN = ROOT / "wersion_train"
-DATASETS = WERSION_TRAIN / "datasets"
+DATASETS = ROOT / "datasets"
+# 兼容旧引用：本文件的 ROOT 现在就是 wersion_train/ 目录本身
+WERSION_TRAIN = ROOT
 
-# 预训练权重（用户的 yolo26 环境里已有 yolo26n，这里统一放 weights/ 下引用）
+# 预训练权重（用户的 yolo26 环境里已有 yolo26n，这里统一放 wersion_train/weights/ 下引用）
 DEFAULT_DETECT_WEIGHTS = WEIGHTS / "yolo26n.pt"
 DEFAULT_POSE_WEIGHTS = WEIGHTS / "yolo26n-pose.pt"
 
@@ -32,7 +33,7 @@ DETECT_SIZES = ("n", "s", "m", "l", "x")
 
 
 def ensure_dirs() -> None:
-    for directory in (WEIGHTS, RUNS, OUTPUT, CONFIGS, DATA, DATASETS):
+    for directory in (WEIGHTS, RUNS, OUTPUT, CONFIGS, DATASETS):
         directory.mkdir(parents=True, exist_ok=True)
 
 

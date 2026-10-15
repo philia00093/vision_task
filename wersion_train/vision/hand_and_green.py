@@ -24,7 +24,7 @@ from pathlib import Path
 
 import cv2
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[1]   # = wersion_train/
 sys.path.insert(0, str(ROOT))
 
 for _stream in (sys.stdout, sys.stderr):      # 防止中文提示在 cmd 里变乱码
@@ -33,10 +33,10 @@ for _stream in (sys.stdout, sys.stderr):      # 防止中文提示在 cmd 里变
     except Exception:
         pass
 
-from src.common import OUTPUT, save_image  # noqa: E402
-from src.modules.green_regions import GreenConfig, detect_green_regions, draw_green  # noqa: E402
-from src.modules.hand_tracker import HandTracker  # noqa: E402
-from src.stream import FpsMeter, StreamReader  # noqa: E402
+from vision.common import OUTPUT, save_image  # noqa: E402
+from vision.modules.green_regions import GreenConfig, detect_green_regions, draw_green  # noqa: E402
+from vision.modules.hand_tracker import HandTracker  # noqa: E402
+from vision.stream import FpsMeter, StreamReader  # noqa: E402
 
 WINDOW = "Hand + Green Regions"
 HAND_COLOR = (255, 0, 220)      # 洋红

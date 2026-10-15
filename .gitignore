@@ -5,30 +5,28 @@ __pycache__/
 .venv/
 venv/
 
-# ---- 模型权重：体积大，用脚本重新下载，不进仓库 ----
-# 重新获取：python scripts/download_weights.py --pose
-#           python wersion_train/tools/build_hand_model.py
-weights/*.pt
+# ---- 模型权重：体积大，用脚本重新生成，不进仓库 ----
+#   python wersion_train/tools/download_weights.py --pose
+#   python wersion_train/tools/build_hand_model.py
+wersion_train/weights/*.pt
 *.onnx
 
-# ---- 训练数据与产物：体积大、且多为私有素材 ----
-wersion_train/datasets/**/images/
-wersion_train/datasets/**/labels/
+# ---- 数据集图片/标签：多为私有素材，按需放开 ----
+wersion_train/datasets/*/images/*/
+wersion_train/datasets/*/labels/*/
 wersion_train/raw_frames/
+wersion_train/annotations/
 wersion_train/runs/
 wersion_train/events/
-wersion_train/annotations/
-runs/
-data/
 
-# ---- 运行输出与临时抓图 ----
+# ---- 训练图片：默认跟踪（这是标注与训练要用的），如需忽略请注释掉下面两行 ----
+# wersion_train/images/
+
+# ---- 运行输出与临时文件 ----
 output/
+wersion_train/output/
 *.mp4
 *.avi
-
-# ---- 现场抓图：含工位画面，按需保留，默认忽略 ----
-*View_screenshot*.png
-screenshot*.png
 
 # ---- 编辑器 / 系统 ----
 .vscode/*

@@ -1,103 +1,111 @@
-# version_task — 料盘/装配区视觉 + 手部跟踪 + 零件与装配步骤训练
+# vesion_task — 视觉识别 + YOLO 训练
 
-针对左目相机画面：**左侧料盘区**、**右侧装配区**，实时跟踪**手**，
-并用 YOLO26n 训练**四个零件**（底部 / 支撑柱 / 盘 / 罗盘）和**装配步骤**（step_0 ~ step_3 + 完整体）。
+相机画面：识别**物料区**（画面右侧，红框）与**装配区**（画面左侧，蓝框），
+并按物料区是否被遮挡显示工位状态（**取料中** / **装配中**）。
+另含用 YOLO26n 训练**零件识别**与**装配步骤识别**的完整数据与代码。
+
+> 目录名 `vesion_task` 是创建时的拼写（少了一个 `r`），与 GitHub 仓库名一致，未改名以免打断远端关联。
 
 ---
 
-## 1. 目录
+## 1. 目录结构
 
 ```
-version_task/
-├─ left_eye_view.py         左目相机预览/抓帧（原有，保留）
-├─ stereo_fusion.py         双目拆帧与图像读写（原有，保留）
-├─ run_pipeline.bat         ★ 跑视觉流水线（区域检测 + 手部跟踪）
-├─ src/
-│  ├─ run_pipeline.py       流水线入口（命令行参数见 --help）
-│  ├─ stream.py             视频流读取（相机 MJPEG 协商 / 视频文件 / 图片）
-│  ├─ models.py             权重路径解析与模型加载
-│  ├─ common.py             路径、类别表、中文路径读写
-│  └─ modules/
-│     ├─ regions.py         料盘区/装配区检测 + 手越区判断 + 基线 JSON
-│     ├─ hand_tracker.py    手部跟踪（21 关键点，ByteTrack/BoT-SORT 给 ID）
-│     ├─ draw.py            区域框、手框+ID、骨架、状态栏、告警
-│     └─ pipeline.py        三者串成一条链
-├─ configs/
-│  ├─ data_regions.yaml         区域数据集（tray_area / assembly_area / hand）
-│  ├─ data_wersion_parts.yaml   零件数据集（bottom / support_pillar / tray / compass）
-│  ├─ data_wersion_steps.yaml   步骤数据集（step_0 ~ step_3 / complete）
-│  ├─ data_hand_pose.yaml       手部 21 关键点数据集（YOLO pose）
-│  ├─ classes_*.txt             类别表
-│  ├─ hand_keypoints_21.txt     21 点顺序（MediaPipe 顺序）
-│  └─ trackers/{bytetrack,botsort}.yaml
-├─ weights/                 yolo26n.pt、yolo26n-pose.pt
-├─ wersion_train/           ★ 训练与标注工作区（见下）
-├─ data/                    区域与手部姿态数据集
-├─ output/                  标注结果图、区域基线 JSON
-└─ scripts/download_weights.py  再下/补下权重
+vesion_task/
+├─ test_run.py             ★ 主程序：右目预览 + 绿色区域识别 + 工位状态
+├─ stereo_fusion.py        双目拆帧与图像读写（中文路径安全）
+├─ run_pipeline.bat        视觉流水线（绿色区域 + 手部跟踪）
+├─ run_hand_green.bat      精简版（只做绿色区域 + 手）
+├─ output/                 运行输出（已 gitignore）
+└─ wersion_train/          ★ 全部 YOLO 训练相关
+   ├─ src/train_detect.py      训练入口（YOLO26n 检测）
+   ├─ tools/                   抽帧 / 转换标注 / 划分 / 体检 / 下权重
+   ├─ vision/                  视觉流水线源码包（region / hand / stream / draw）
+   ├─ configs/                 数据集 yaml、类别表、跟踪器配置
+   ├─ weights/                 预训练权重（.pt 已 gitignore，用脚本重下）
+   ├─ datasets/                YOLO 数据集（images/{train,val,raw} + labels/...）
+   │  ├─ wersion_parts/        零件识别数据集
+   │  ├─ wersion_steps/        步骤识别数据集
+   │  ├─ regions/              区域数据集
+   │  └─ hand_pose/            手部 21 关键点数据集
+   ├─ images/                  ★ 训练图片总目录
+   │  ├─ parts/                零件识别用图（底部 / 支撑柱 / 盘 / 罗盘）
+   │  └─ steps/                步骤识别用图（step_0~3 / complete）
+   ├─ parts/{bottom,support_pillar,tray,compass}/{images,labels}   按类别分开标注
+   ├─ steps/{step_0..step_3,complete}/{images,labels}              按步骤分开标注
+   ├─ annotations/             X-AnyLabeling 导出统一放这
+   ├─ raw_frames/              视频抽帧原始帧
+   ├─ runs/                    训练输出
+   └─ events/                  手越区事件 CSV
 ```
 
-## 2. wersion_train 文件夹
+## 2. 克隆后先补权重（仓库不含 .pt）
 
-```
-wersion_train/
-├─ datasets/                      训练用数据集（yaml 在 configs/ 下）
-│  ├─ wersion_regions/            区域：料盘区 / 装配区 / 手
-│  ├─ wersion_parts/              零件：4 类
-│  ├─ wersion_steps/              步骤：5 类
-│  └─ wersion_hand_pose/          手部 21 关键点
-│     每个数据集统一：images/{train,val,raw}  labels/{train,val,raw}
-├─ parts/                         零件分开标，避免串类
-│  ├─ bottom/{images,labels}/          底部
-│  ├─ support_pillar/{images,labels}/  支撑柱
-│  ├─ tray/{images,labels}/            盘
-│  └─ compass/{images,labels}/         罗盘
-├─ steps/                         步骤分开标
-│  ├─ step_0/   空盘初始态
-│  ├─ step_1/   盘里只有底部
-│  ├─ step_2/   底部 + 支撑柱
-│  ├─ step_3/   底部 + 支撑柱 + 罗盘
-│  └─ complete/ 完整体（盘 + 底部 + 支撑柱 + 罗盘）
-├─ annotations/                   X-AnyLabeling 导出统一放这里
-├─ raw_frames/                    视频抽帧的原始帧
-├─ runs/                          训练输出（权重、曲线）
-├─ events/                        手跨越区域的事件 CSV
-└─ tools/                         抽帧 / 转换 / 划分 / 体检 / 建目录
+```bash
+python wersion_train/tools/download_weights.py --pose
 ```
 
-## 3. 运行方式
+会下到 `wersion_train/weights/`：`yolo26n.pt`（检测训练用）、`yolo26n-pose.pt`。
 
-```
-run_pipeline.bat --source "test_1.png" --save
-run_pipeline.bat --source 0                                   # 实时相机预览，Q 退出
-run_pipeline.bat --source test.mp4 --loop --save --log-events
-run_pipeline.bat --debug-green                                # 存绿色掩码到 output/green/
-```
+## 3. 直接运行（无需训练）
 
-### 区域识别：绿色分割（默认）
-
-料盘是纯色工装，直接 OpenCV 在 HSV 空间分割，**零训练**：左块 = 料盘区，右块 = 装配区。
-
-现场光照变了就调阈值，不用重新标数据：
-
-```
-run_pipeline.bat --green-lo 30 60 80 --green-hi 100 255 255   # 放宽绿色范围
-run_pipeline.bat --min-area 0.01                              # 提高面积门槛，滤小色块
-run_pipeline.bat --merge-gap 40                               # 料盘被反光切成两块时合并
+```bash
+python test_run.py                                            # 实时相机
+python test_run.py --source wersion_train\images\parts\test_1.png --save
+run_pipeline.bat --source wersion_train\images\parts\test_1.png --save
 ```
 
-识别不到两块时自动几何兜底（`--split-ratio`）并在画面顶部红字提示，不会静默出错。
-要换回训练模型：`--no-green --region weights/region_best.pt`。
+热键：`S` 保存当前帧（含识别结果），`Q` / `ESC` 退出。
 
+绿色阈值现场可调（光照不同时）：
 
-## 5. 类别语义（重要）
+```bash
+python test_run.py --green-lo 30 60 80 --min-area 0.01 --zone-min-area 0.012
+```
 
-| 数据集 | 类别 | 含义 |
-|---|---|---|
-| regions | tray_area / assembly_area / hand | 左侧料盘区 / 右侧装配区 / 手 |
-| parts | bottom / support_pillar / tray / compass | 底部 / 支撑柱 / 盘 / 罗盘 |
-| steps | step_0 | 空盘初始态（盘里什么都没有） |
-| | step_1 | 盘里只有**底部** |
-| | step_2 | 底部 + 支撑柱 |
-| | step_3 | 底部 + 支撑柱 + 罗盘 |
-| | complete | 完整体（盘 + 底部 + 支撑柱 + 罗盘） |
+| 参数 | 作用 |
+|---|---|
+| `--green-lo / --green-hi` | 绿色 HSV 范围（实测绿板 H≈75 S≈120 V≈224-255） |
+| `--min-area` | 连通域最小面积，滤噪点 |
+| `--zone-min-area` | 被当作"区域"的最小面积，滤掉桌面小绿杂物 |
+| `--occlude-ratio` | 可见绿量低于「首次检测量×该值」判为被遮挡（默认 0.75） |
+
+## 4. 标注 → 训练流程
+
+```bash
+# 1) 抽帧
+python wersion_train/tools/extract_frames.py --source 视频.mp4 --every 10
+# 2) 用 X-AnyLabeling 标注（零件/步骤选 YOLO Detection），导出到 annotations/
+# 3) 转成 YOLO 标签
+python wersion_train/tools/convert_anylabeling.py --data wersion_parts
+# 4) 划分 train/val（同时把 yaml 的 path 改写成当前机器的绝对路径）
+python wersion_train/tools/split_dataset.py --data wersion_parts
+# 5) 体检（格式、类别分布、越界坐标）
+python wersion_train/tools/check_labels.py --data wersion_parts
+# 6) 训练（YOLO26n）
+python wersion_train/src/train_detect.py --data wersion_parts
+#    步骤识别同理：--data wersion_steps
+```
+
+训练产物在 `wersion_train/runs/<数据集>/weights/best.pt`，用起来：
+
+```bash
+run_pipeline.bat --region wersion_train\runs\wersion_parts\weights\best.pt
+```
+
+## 5. 类别语义
+
+| 数据集 | 类别 |
+|---|---|
+| 零件（wersion_parts） | bottom 底部 / support_pillar 支撑柱 / tray 盘 / compass 罗盘 |
+| 步骤（wersion_steps） | step_0 空盘 → step_1 只有底部 → step_2 +支撑柱 → step_3 +罗盘 → complete 完整体 |
+| 区域（regions） | tray_area 料盘区 / assembly_area 装配区 / hand |
+| 手部（hand_pose） | hand，21 关键点（MediaPipe 顺序，见 `configs/hand_keypoints_21.txt`） |
+
+## 6. 运行环境
+
+本机 `yolo26` 环境：Python 3.11 / torch 2.8.0+cu128 / ultralytics 8.4.157。
+两个 `.bat` 已指向 `D:\anaconda3\envs\yolo26\python.exe`，换机器改里面的 `PY` 变量即可。
+
+`test_run.py` 只用标准库 + numpy + opencv + PIL（画中文标签），**不加载任何模型**；
+视觉流水线（`wersion_train/vision/`）才需要 ultralytics。

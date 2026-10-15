@@ -48,7 +48,7 @@ def main() -> int:
     print(f"[完成] 建立 {len(dirs)} 个目录，根目录：{WERSION}")
     print("\n目录树：")
     print("wersion_train/")
-    print("├─ datasets/                 训练用数据集（yaml 在 configs/ 下）")
+    print("├─ datasets/                 训练用数据集（yaml 在 wersion_train/configs/ 下）")
     for name in DATASETS:
         print(f"│  ├─ {name}/")
         print("│  │  ├─ images/{train,val,raw}/")

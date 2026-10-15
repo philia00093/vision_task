@@ -5,19 +5,19 @@
     · 结构不做手工复制，而是读取已安装的 cfg/models/26/yolo26-pose.yaml 派生，
       只覆盖 kpt_shape / nc / scale 三处，因此不会因为模块名写错而建不出模型；
     · 把 17 点权重里形状匹配的部分（主干/颈部）迁移过来，关键点分支按 21 点新建；
-    · 不改 site-packages：派生配置写在项目 weights/ 下，通过环境变量告诉
+    · 不改 site-packages：派生配置写在项目 wersion_train/weights/ 下，通过环境变量告诉
       ultralytics 去那里找模型 yaml，安装包本身保持原样；
     · 不装任何新包，只用现有的 ultralytics + torch。
 
-21 点顺序与 MediaPipe 一致，见 configs/hand_keypoints_21.txt。
+21 点顺序与 MediaPipe 一致，见 wersion_train/configs/hand_keypoints_21.txt。
 
 用法：
     python wersion_train/tools/build_hand_model.py
     python wersion_train/tools/build_hand_model.py --scale s      # 换 yolo26s 主干
     python wersion_train/tools/build_hand_model.py --dry-run      # 只看派生配置
 
-产物：weights/yolo26n-pose-21kpt.pt，之后：
-    run_pipeline.bat --hand weights/yolo26n-pose-21kpt.pt
+产物：wersion_train/weights/yolo26n-pose-21kpt.pt，之后：
+    run_pipeline.bat --hand wersion_train/weights/yolo26n-pose-21kpt.pt
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ KPT_NAMES_FILE = ROOT / "configs" / "hand_keypoints_21.txt"
 
 
 def read_kpt_names() -> dict[int, str]:
-    """读取 configs/hand_keypoints_21.txt 的 '序号 名称' 列表。"""
+    """读取 wersion_train/configs/hand_keypoints_21.txt 的 '序号 名称' 列表。"""
     names: dict[int, str] = {}
     if not KPT_NAMES_FILE.is_file():
         return names
@@ -126,7 +126,7 @@ def derive_config(scale: str, nc: int) -> tuple[str, Path]:
     YAML.save(out_path, config, header=(
         "# 手部 21 关键点 YOLO26 姿态模型配置（由 wersion_train/tools/build_hand_model.py 生成）\n"
         f"# 派生自官方 {base_yaml.name}，仅覆盖 scale / nc / kpt_shape\n"
-        "# kpt_shape: [21, 3] —— 21 点顺序见 configs/hand_keypoints_21.txt\n"))
+        "# kpt_shape: [21, 3] —— 21 点顺序见 wersion_train/configs/hand_keypoints_21.txt\n"))
     return str(out_path), out_path
 
 
@@ -137,9 +137,9 @@ def main() -> int:
     parser.add_argument("--nc", type=int, default=HAND_CLASSES,
                         help="类别数，默认 1（只有 hand）")
     parser.add_argument("--base", default=None,
-                        help="迁移权重的源权重，默认 weights/yolo26<scale>-pose.pt")
+                        help="迁移权重的源权重，默认 wersion_train/weights/yolo26<scale>-pose.pt")
     parser.add_argument("--out", default=None,
-                        help="输出权重，默认 weights/yolo26<scale>-pose-21kpt.pt")
+                        help="输出权重，默认 wersion_train/weights/yolo26<scale>-pose-21kpt.pt")
     parser.add_argument("--dry-run", action="store_true", help="只派生配置不建模型")
     args = parser.parse_args()
 
@@ -171,7 +171,7 @@ def main() -> int:
         print(f"[迁移] 已从 {base_path.name} 迁移形状匹配的权重（主干/颈部）")
     else:
         print(f"[迁移] 源权重不存在（{base_path}），本次为全新初始化；"
-              "可先跑 scripts/download_weights.bat --pose")
+              "可先跑 wersion_train/tools/download_weights.bat --pose")
 
     attach_pose_metadata(model)          # 关键一步：补 kpt_shape / kpt_names
     model.save(str(out_path))
@@ -185,7 +185,7 @@ def main() -> int:
           f"\"Left Eye View_screenshot_13.10.2026.png\" --save")
     print("       注意：关键点分支是按 21 点新建的、尚未训练，点位不准；"
           "检测框与跟踪 ID 现在可用。")
-    print("             要得到准确的 21 点：标 configs/data_hand_pose.yaml → "
+    print("             要得到准确的 21 点：标 wersion_train/configs/data_hand_pose.yaml → "
           "wersion_train/train_pose.py --data wersion_hand_pose")
     return 0
 

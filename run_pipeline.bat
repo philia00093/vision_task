@@ -1,14 +1,18 @@
 @echo off
-REM 用 yolo26 环境跑视觉流水线（区域检测 + 手部跟踪）
-REM 所有参数原样传给 src\run_pipeline.py，例如：
-REM   run_pipeline.bat --source "test_1.png" --save
-REM   run_pipeline.bat --hand weights\yolo26n-pose.pt --save --save-baseline
+chcp 65001 > nul
+REM Vision pipeline: green region detection + hand tracking
+REM Training code lives under wersion_train\ (see wersion_train\README.md)
+REM NOTE: keep REM comments ASCII; full-width CJK punctuation breaks cmd parsing.
+REM   run_pipeline.bat --source test_1.png --save
+REM   run_pipeline.bat --source 0
 setlocal
 set PY=D:\anaconda3\envs\yolo26\python.exe
 if not exist "%PY%" (
-  echo [错误] 找不到 yolo26 环境解释器：%PY%
-  echo        请修改本文件里的 PY 变量。
+  echo [错误] 找不到 yolo26 环境解释器 %PY%
+  echo        请修改本文件里的 PY 变量
   exit /b 1
 )
-"%PY%" "%~dp0src\run_pipeline.py" %*
+REM Inject package path via PYTHONPATH so the caller's working directory is unchanged
+set "PYTHONPATH=%~dp0wersion_train;%PYTHONPATH%"
+"%PY%" -m vision.run_pipeline %*
 exit /b %ERRORLEVEL%

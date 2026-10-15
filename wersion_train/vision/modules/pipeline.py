@@ -20,7 +20,7 @@ from .regions import RegionDetector, RegionState, load_baseline, save_baseline
 
 class VisionPipeline:
     def __init__(self, region_weights=None, hand_weights=None, step_weights=None,
-                 tracker="configs/trackers/bytetrack.yaml", conf=0.35, hand_conf=0.35,
+                 tracker="wersion_train/configs/trackers/bytetrack.yaml", conf=0.35, hand_conf=0.35,
                  imgsz=640, device=None, split_ratio=0.5, baseline=None,
                  show_keypoints=True, use_green=True, green_config=None, debug_dir=None,
                  log_events=False, verbose=False):
@@ -33,7 +33,6 @@ class VisionPipeline:
                                        debug_dir=debug_dir)
         self.tracker = HandTracker(weights=hand_weights, tracker=tracker, conf=hand_conf,
                                    imgsz=imgsz, device=device, verbose=verbose)
-        self.tracker.write_hand_template()
         self.last_hands: list = []
         self.event_log = None
         self._writer = None
