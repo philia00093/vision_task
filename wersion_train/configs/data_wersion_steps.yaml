@@ -25,6 +25,6 @@ names:
 #   · 若最终决定不要 complete 类而把完整体并入 step_3，直接删掉这一行并同步改
 #     wersion_train/classes_steps.txt 与标注。
 
-path: D:\wang_robot\3_1\version_task\vesion_task\wersion_train\datasets\wersion_steps
+path: D:\wang_robot\3_1\version_task\vision_task\wersion_train\datasets\wersion_steps
 train: images/train
 val: images/val

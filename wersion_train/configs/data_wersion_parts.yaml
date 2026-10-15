@@ -19,6 +19,6 @@ names:
 #     否则模型在实时装配视频里会漏检。
 #   · 同类零件在不同工位/不同光照下都要采；零件很小，训练时 imgsz 建议 960 起。
 
-path: D:\wang_robot\3_1\version_task\vesion_task\wersion_train\datasets\wersion_parts
+path: D:\wang_robot\3_1\version_task\vision_task\wersion_train\datasets\wersion_parts
 train: images/train
 val: images/val
