@@ -4,11 +4,11 @@
 否则小类别可能一张 val 都进不去，训完看不出好坏。
 
 用法：
-    python wersion_train/tools/split_dataset.py --data wersion_parts
-    python wersion_train/tools/split_dataset.py --data wersion_steps --val-ratio 0.2 --seed 0
+    python vision_yolo_train/tools/split_dataset.py --data wersion_parts
+    python vision_yolo_train/tools/split_dataset.py --data wersion_steps --val-ratio 0.2 --seed 0
 
 默认复制（原图留在 images/raw 里方便回看）；--move 省磁盘。
-同时会重写 wersion_train/configs/data_<name>.yaml 的 train/val/path，保证训练脚本拿到正确路径。
+同时会重写 vision_yolo_train/configs/data_<name>.yaml 的 train/val/path，保证训练脚本拿到正确路径。
 """
 
 from __future__ import annotations
@@ -21,15 +21,16 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT))
-WERSION = ROOT / "wersion_train"
+import sys as _sys
+_sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import paths  # noqa: E402  统一路径定义（见 vision_yolo_train/paths.py）
+
+
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
 
 # 数据集 → 对应的 data yaml（训练入口都用这个文件）
 YAML_FOR = {
-    "wersion_parts": ROOT / "configs" / "data_wersion_parts.yaml",
-    "wersion_steps": ROOT / "configs" / "data_wersion_steps.yaml",
+    **paths.DATASET_YAML,
 }
 
 
@@ -79,7 +80,7 @@ def main() -> int:
     parser.add_argument("--no-yaml", action="store_true", help="不更新 data yaml")
     args = parser.parse_args()
 
-    dataset_dir = WERSION / "datasets" / args.data
+    dataset_dir = paths.DATASET_DIR[args.data]
     raw_images = dataset_dir / "images" / "raw"
     raw_labels = dataset_dir / "labels" / "raw"
     if not raw_images.is_dir():
@@ -139,7 +140,7 @@ def main() -> int:
         yaml_path = YAML_FOR.get(args.data)
         if yaml_path:
             update_yaml(yaml_path, dataset_dir)
-    print(f"下一步：python wersion_train/tools/check_labels.py --data {args.data}")
+    print(f"下一步：python vision_yolo_train/tools/check_labels.py --data {args.data}")
     return 0
 
 

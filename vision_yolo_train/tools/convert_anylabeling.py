@@ -10,8 +10,8 @@ JSON 里识别这些形状：
     polygon     → 取外接矩形当检测框（如果你用了分割标注）
 
 用法：
-    python wersion_train/tools/convert_anylabeling.py --data wersion_parts
-    python wersion_train/tools/convert_anylabeling.py --data wersion_steps --dry-run
+    python vision_yolo_train/tools/convert_anylabeling.py --data wersion_parts
+    python vision_yolo_train/tools/convert_anylabeling.py --data wersion_steps --dry-run
 
 输出：
     datasets/<data>/images/raw/*.jpg   图片汇总
@@ -26,9 +26,11 @@ import shutil
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT))
-WERSION = ROOT / "wersion_train"
+import sys as _sys
+_sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import paths  # noqa: E402  统一路径定义（见 vision_yolo_train/paths.py）
+
+
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
 
 
@@ -126,15 +128,15 @@ def main() -> int:
     parser.add_argument("--data", required=True,
                         help="数据集名：wersion_parts（零件）/ wersion_steps（步骤）")
     parser.add_argument("--src", default=None,
-                        help="标注所在目录；默认自动找 wersion_train/annotations 与 "
-                             "wersion_train/<parts|steps>/<类别>")
+                        help="标注所在目录；默认自动找 vision_yolo_train/annotations 与 "
+                             "vision_yolo_train/<parts|steps>/<类别>")
     parser.add_argument("--classes", default=None, help="类别表文件，默认用数据集 classes.txt")
     parser.add_argument("--dry-run", action="store_true", help="只报告不写文件")
     parser.add_argument("--copy-images", action="store_true", default=True,
                         help="把标注目录里的图片汇总到 images/raw（默认开）")
     args = parser.parse_args()
 
-    dataset_dir = WERSION / "datasets" / args.data
+    dataset_dir = paths.DATASET_DIR[args.data]
     classes_file = Path(args.classes) if args.classes else dataset_dir / "classes.txt"
     if not classes_file.is_file():
         print(f"[错误] 找不到类别表 {classes_file}；先跑 init_datasets.bat")
@@ -148,15 +150,15 @@ def main() -> int:
     if args.src:
         sources = [Path(args.src)]
     else:
-        candidates = [WERSION / "annotations"]
+        candidates = [paths.ANNOTATIONS]
         kind = "parts" if args.data == "wersion_parts" else (
             "steps" if args.data == "wersion_steps" else None)
         if kind:
-            candidates += [p for p in sorted((WERSION / kind).glob("*")) if p.is_dir()]
+            candidates += [p for p in sorted((paths.ROOT / kind).glob("*")) if p.is_dir()]
         sources = [p for p in candidates if p.is_dir()]
         if not sources:
             print("[错误] 没找到标注目录；用 --src 指定，或先把 X-AnyLabeling 导出放到 "
-                  f"{WERSION / 'annotations'}")
+                  f"{paths.ROOT / 'annotations'}")
             return 2
     print(f"[来源] {', '.join(str(s) for s in sources)}")
 
@@ -223,7 +225,7 @@ def main() -> int:
             print(f"   · {item}")
     if not args.dry_run:
         print(f"[输出] {out_labels}\n        {out_images}")
-    print("下一步：python wersion_train/tools/split_dataset.py --data " + args.data)
+    print("下一步：python vision_yolo_train/tools/split_dataset.py --data " + args.data)
     return 1 if errors else 0
 
 

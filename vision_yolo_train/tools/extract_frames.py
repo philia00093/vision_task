@@ -7,9 +7,9 @@
     --limit N        最多保存 N 张
 
 用法：
-    python wersion_train/tools/extract_frames.py --source 视频流.mp4 --every 10
-    python wersion_train/tools/extract_frames.py --source 0 --every 15 --limit 300
-    python wersion_train/tools/extract_frames.py --source 视频流.mp4 --every 5 --split-ratio 0.5
+    python vision_yolo_train/tools/extract_frames.py --source 视频流.mp4 --every 10
+    python vision_yolo_train/tools/extract_frames.py --source 0 --every 15 --limit 300
+    python vision_yolo_train/tools/extract_frames.py --source 视频流.mp4 --every 5 --split-ratio 0.5
 """
 
 from __future__ import annotations
@@ -21,8 +21,11 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT))
+import sys as _sys
+_sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import paths  # noqa: E402  统一路径定义（见 vision_yolo_train/paths.py）
+
+
 
 
 def laplacian_var(gray) -> float:
@@ -34,7 +37,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="视频抽帧")
     parser.add_argument("--source", required=True, help="视频文件路径或相机序号")
     parser.add_argument("--out", default=None,
-                        help="输出目录，默认 wersion_train/raw_frames/<视频名>")
+                        help="输出目录，默认 vision_yolo_train/raw_frames/<视频名>")
     parser.add_argument("--every", type=int, default=10, help="每 N 帧取一帧")
     parser.add_argument("--motion", type=float, default=1.5,
                         help="与上一保留帧的平均绝对差阈值（0=不去重）")
@@ -49,7 +52,7 @@ def main() -> int:
 
     source = str(args.source)
     out_dir = Path(args.out) if args.out else (
-        ROOT / "wersion_train" / "raw_frames" /
+        paths.ROOT / "vision_yolo_train" / "raw_frames" /
         (Path(source).stem if Path(source).suffix else f"cam{source}"))
     out_dir.mkdir(parents=True, exist_ok=True)
 

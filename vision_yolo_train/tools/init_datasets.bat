@@ -1,6 +1,6 @@
 @echo off
 chcp 65001 > nul
-REM 建立 wersion_train 数据集骨架（images/labels 的 train/val 目录 + 类别表 + 数据集 yaml 模板）
+REM 建立 vision_yolo_train 数据集骨架（images/labels 的 train/val 目录 + 类别表 + 数据集 yaml 模板）
 REM 幂等：已存在的文件不会覆盖
 setlocal
 set PY=D:\anaconda3\envs\yolo26\python.exe

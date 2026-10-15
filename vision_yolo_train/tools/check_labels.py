@@ -4,8 +4,8 @@
 不会明确报错，所以在开训前把问题一次性摊开。
 
 用法：
-    python wersion_train/tools/check_labels.py --data wersion_parts
-    python wersion_train/tools/check_labels.py --data wersion_steps --fix    # 顺手清理坏行
+    python vision_yolo_train/tools/check_labels.py --data wersion_parts
+    python vision_yolo_train/tools/check_labels.py --data wersion_steps --fix    # 顺手清理坏行
 
 退出码：0 正常；1 有错误（--strict 时连警告也算失败）。
 """
@@ -17,8 +17,11 @@ import collections
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT))
+import sys as _sys
+_sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import paths  # noqa: E402  统一路径定义（见 vision_yolo_train/paths.py）
+
+
 
 for _stream in (sys.stdout, sys.stderr):   # 防止中文提示在 cmd 里变乱码
     try:
@@ -26,7 +29,6 @@ for _stream in (sys.stdout, sys.stderr):   # 防止中文提示在 cmd 里变乱
     except Exception:
         pass
 
-WERSION = ROOT / "wersion_train"
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
 KPT_SHAPE = 21
 
@@ -148,15 +150,12 @@ def main() -> int:
     parser.add_argument("--splits", nargs="*", default=["train", "val"])
     args = parser.parse_args()
 
-    dataset_dir = WERSION / "datasets" / args.data
+    dataset_dir = paths.DATASET_DIR[args.data]
     if not dataset_dir.is_dir():
         print(f"[错误] 数据集目录不存在：{dataset_dir}；先跑 init_datasets.bat")
         return 2
 
-    yaml_map = {
-        "wersion_parts": ROOT / "configs" / "data_wersion_parts.yaml",
-        "wersion_steps": ROOT / "configs" / "data_wersion_steps.yaml",
-    }
+    yaml_map = dict(paths.DATASET_YAML)
     yaml_path = Path(args.yaml) if args.yaml else yaml_map.get(args.data)
     names = read_names_from_yaml(yaml_path) if yaml_path else []
     if not names:
@@ -217,9 +216,9 @@ def main() -> int:
     failed = bool(all_problems) or (args.strict and bool(all_warnings))
     print("\n[结论] " + ("不通过，先修上面的错误" if failed else "通过，可以开训"))
     if not failed:
-        print(f"        python wersion_train/src/train_detect.py --data {args.data}")
+        print(f"        python vision_yolo_train/train_detect.py --data {args.data}")
         if pose:
-            print(f"        python wersion_train/train_pose.py --data {args.data}")
+            print(f"        python vision_yolo_train/train_pose.py --data {args.data}")
     return 1 if failed else 0
 
 

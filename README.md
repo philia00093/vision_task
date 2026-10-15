@@ -11,41 +11,46 @@
 
 ```
 vision_task/
-├─ test_run.py             ★ 主程序：右目预览 + 绿色区域识别 + 工位状态
-├─ stereo_fusion.py        双目拆帧与图像读写（中文路径安全）
-├─ output/                 运行输出（已 gitignore）
-└─ wersion_train/          ★ 全部 YOLO 训练相关
-   ├─ src/train_detect.py      训练入口（YOLO26n 检测）
-   ├─ tools/                   抽帧 / 转换标注 / 划分 / 体检 / 下权重
-   ├─ configs/                 数据集 yaml、类别表、跟踪器配置
-   ├─ weights/                 预训练权重（.pt 已 gitignore，用脚本重下）
-   ├─ datasets/                YOLO 数据集（images/{train,val,raw} + labels/...）
-   │  ├─ wersion_parts/        零件识别数据集
-   │  ├─ wersion_steps/        步骤识别数据集
-   ├─ images/                  ★ 训练图片总目录
-   │  ├─ parts/                零件识别用图（底部 / 支撑柱 / 盘 / 罗盘）
-   │  └─ steps/                步骤识别用图（step_0~3 / complete）
-   ├─ parts/{bottom,support_pillar,tray,compass}/{images,labels}   按类别分开标注
-   ├─ steps/{step_0..step_3,complete}/{images,labels}              按步骤分开标注
-   ├─ annotations/             X-AnyLabeling 导出统一放这
-   ├─ raw_frames/              视频抽帧原始帧
-   ├─ runs/                    训练输出
-   └─ events/                  手越区事件 CSV
+├─ test_run.py                 ★ 主程序：预览 + 绿色区域识别 + 工位状态
+├─ stereo_fusion.py            双目拆帧与图像读写（中文路径安全）
+├─ output/                     运行输出（已 gitignore）
+└─ vision_yolo_train/          ★ YOLO 视觉模型训练工程
+   ├─ train_detect.py            训练入口（YOLO26n 检测，最常用）
+   ├─ paths.py                   ★ 统一路径定义，所有脚本都从这里取路径
+   ├─ tools/                     抽帧 / 转换标注 / 划分 / 体检 / 下权重 / 建骨架
+   ├─ configs/                   数据集 yaml 与类别表
+   ├─ weights/                   预训练权重（.pt 已 gitignore，用脚本重下）
+   ├─ images/                    ★ 待标注图片总目录
+   │  ├─ parts/                  零件识别：底部 / 支撑柱 / 盘 / 罗盘
+   │  └─ steps/                  步骤识别：step_0~3 / complete
+   ├─ datasets/                  YOLO 数据集（images/{train,val,raw} + labels/…）
+   │  ├─ wersion_parts/          零件识别数据集
+   │  ├─ wersion_steps/          步骤识别数据集
+   │  └─ annotate/               按类别分开的标注工作区
+   │     ├─ parts/{bottom,support_pillar,tray,compass}/{images,labels}
+   │     └─ steps/{step_0..step_3,complete}/{images,labels}
+   ├─ annotations/               X-AnyLabeling 导出统一放这
+   ├─ raw_frames/                视频抽帧原始帧
+   └─ runs/                      训练输出（权重、曲线）
 ```
+
+**路径只有一个来源**：`vision_yolo_train/paths.py`。
+其余脚本不再各写 `parents[N]`，脚本挪位置也不会断路径。
+想看解析结果：`python vision_yolo_train/paths.py`
 
 ## 2. 克隆后先补权重（仓库不含 .pt）
 
 ```bash
-python wersion_train/tools/download_weights.py
+python vision_yolo_train/tools/download_weights.py
 ```
 
-会下到 `wersion_train/weights/yolo26n.pt`（检测训练用的预训练权重）。
+会下到 `vision_yolo_train/weights/yolo26n.pt`（检测训练用的预训练权重）。
 
 ## 3. 直接运行（无需训练）
 
 ```bash
 python test_run.py                                            # 实时相机
-python test_run.py --source wersion_train\images\parts\test_1.png --save
+python test_run.py --source vision_yolo_train\images\parts\test_1.png --save
 ```
 
 热键：`S` 保存当前帧（含识别结果），`Q` / `ESC` 退出。
@@ -67,20 +72,20 @@ python test_run.py --green-lo 30 60 80 --min-area 0.01 --zone-min-area 0.012
 
 ```bash
 # 1) 抽帧
-python wersion_train/tools/extract_frames.py --source 视频.mp4 --every 10
+python vision_yolo_train/tools/extract_frames.py --source 视频.mp4 --every 10
 # 2) 用 X-AnyLabeling 标注（零件/步骤选 YOLO Detection），导出到 annotations/
 # 3) 转成 YOLO 标签
-python wersion_train/tools/convert_anylabeling.py --data wersion_parts
+python vision_yolo_train/tools/convert_anylabeling.py --data wersion_parts
 # 4) 划分 train/val（同时把 yaml 的 path 改写成当前机器的绝对路径）
-python wersion_train/tools/split_dataset.py --data wersion_parts
+python vision_yolo_train/tools/split_dataset.py --data wersion_parts
 # 5) 体检（格式、类别分布、越界坐标）
-python wersion_train/tools/check_labels.py --data wersion_parts
+python vision_yolo_train/tools/check_labels.py --data wersion_parts
 # 6) 训练（YOLO26n）
-python wersion_train/src/train_detect.py --data wersion_parts
+python vision_yolo_train/train_detect.py --data wersion_parts
 #    步骤识别同理：--data wersion_steps
 ```
 
-训练产物在 `wersion_train/runs/<数据集>/weights/best.pt`。
+训练产物在 `vision_yolo_train/runs/<数据集>/weights/best.pt`。
 
 ## 5. 类别语义
 
@@ -95,4 +100,4 @@ python wersion_train/src/train_detect.py --data wersion_parts
 两个 `.bat` 已指向 `D:\anaconda3\envs\yolo26\python.exe`，换机器改里面的 `PY` 变量即可。
 
 `test_run.py` 只用标准库 + numpy + opencv + PIL（画中文标签），**不加载任何模型**；
-只有训练脚本（`wersion_train/src`、`wersion_train/tools`）需要 ultralytics。
+只有训练脚本（`vision_yolo_train/train_detect.py`、`vision_yolo_train/tools/`）需要 ultralytics。
