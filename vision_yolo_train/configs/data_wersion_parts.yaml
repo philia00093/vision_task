@@ -1,24 +1,21 @@
-# 装配件（零件）数据集：底部 / 支撑柱 / 盘 / 罗盘
+# 零件识别数据集（底部 / 支撑柱 / 罗盘 / 盘）
 # 标注工具：X-AnyLabeling，导出格式选 YOLO Detection（矩形框）
-# 用法：yolo detect train data=vision_yolo_train/configs/data_wersion_parts.yaml model=vision_yolo_train/weights/yolo26n.pt
+# 用法：python vision_yolo_train/train_detect.py --data wersion_parts
 #
-# 目录约定：
-#   data/wersion_parts/  （或 vision_yolo_train/datasets/wersion_parts/）
-#     images/train/*.jpg   labels/train/*.jpg.txt
-#     images/val/*.jpg     labels/val/*.jpg.txt
-
-
+# 类别名与采集图片前缀一致（用户确认以图片名为准）：
+#   base    底部     <- base_*.png
+#   support 支撑柱   <- support_*.png
+#   compass 罗盘     <- compass_*.png
+#   top     盘/顶盖  <- top_*.png
+#
+# 目录：datasets/wersion_parts/{images,labels}/{train,val,raw}
+#   标注时在 datasets/annotate/parts/<类别>/images/ 看图
+#   导出到 annotations/ 后跑 convert_anylabeling.py 收集标签
 names:
-  0: bottom          # 底部
-  1: support_pillar  # 支撑柱
-  2: tray            # 盘
-  3: compass         # 罗盘
-
-# 训练提示：
-#   · 四类零件建议每类 ≥ 300 个实例，且必须包含"被手遮挡一半"和"只露一角"的困难样本，
-#     否则模型在实时装配视频里会漏检。
-#   · 同类零件在不同工位/不同光照下都要采；零件很小，训练时 imgsz 建议 960 起。
-
+  0: base
+  1: support
+  2: compass
+  3: top
 path: D:\wang_robot\3_1\version_task\vision_task\vision_yolo_train\datasets\wersion_parts
 train: images/train
 val: images/val

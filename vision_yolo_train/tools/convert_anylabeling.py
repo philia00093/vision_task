@@ -130,16 +130,25 @@ def main() -> int:
     parser.add_argument("--src", default=None,
                         help="标注所在目录；默认自动找 vision_yolo_train/annotations 与 "
                              "vision_yolo_train/<parts|steps>/<类别>")
-    parser.add_argument("--classes", default=None, help="类别表文件，默认用数据集 classes.txt")
+    parser.add_argument("--classes", default=None,
+                        help="类别表文件；默认用 configs/classes_<数据集>.txt")
     parser.add_argument("--dry-run", action="store_true", help="只报告不写文件")
     parser.add_argument("--copy-images", action="store_true", default=True,
                         help="把标注目录里的图片汇总到 images/raw（默认开）")
     args = parser.parse_args()
 
     dataset_dir = paths.DATASET_DIR[args.data]
-    classes_file = Path(args.classes) if args.classes else dataset_dir / "classes.txt"
+    # 类别表统一放在 configs/：classes_wersion_parts.txt / classes_wersion_steps.txt
+    if args.classes:
+        classes_file = Path(args.classes)
+    else:
+        classes_file = paths.CONFIGS / f"classes_{args.data}.txt"
+        if not classes_file.is_file():                    # 兜底：数据集目录下的旧位置
+            classes_file = dataset_dir / "classes.txt"
     if not classes_file.is_file():
-        print(f"[错误] 找不到类别表 {classes_file}；先跑 init_datasets.bat")
+        print(f"[错误] 找不到类别表 {classes_file}\n"
+              f"       期望：{paths.CONFIGS / f'classes_{args.data}.txt'}\n"
+              f"       可用 --classes 指定，或跑 init_datasets.py 重建")
         return 2
     names = read_names(classes_file)
     pose = False            # 手部 pose 数据集已移除，只做检测框转换

@@ -4,7 +4,7 @@
     vision_yolo_train/
       datasets/            四个数据集（区域 / 零件 / 步骤 / 手部21点）
         <数据集>/{images,labels}/{train,val,raw}
-      parts/               零件四类：bottom 支撑柱 盘 罗盘
+      parts/               零件四类：base 底部 / support 支撑柱 / compass 罗盘 / top 盘
         <类别>/{images,labels}
       steps/               步骤：step_0 ~ step_3 + complete
         <步骤>/{images,labels}
@@ -29,7 +29,7 @@ import paths  # noqa: E402  统一路径定义（见 vision_yolo_train/paths.py�
 
 
 DATASETS = ("wersion_parts", "wersion_steps")
-PARTS = ("bottom", "support_pillar", "tray", "compass")
+PARTS = ("base", "support", "compass", "top")   # 与采集图片前缀一致
 STEPS = ("step_0", "step_1", "step_2", "step_3", "complete")
 
 

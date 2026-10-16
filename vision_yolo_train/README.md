@@ -4,8 +4,61 @@
 
 | 数据集 | 识别对象 | 类别 |
 |---|---|---|
-| `wersion_parts` | **零件识别** | bottom 底部 / support_pillar 支撑柱 / tray 盘 / compass 罗盘 |
+| `wersion_parts` | **零件识别** | base 底部 / support 支撑柱 / compass 罗盘 / top 盘 |
 | `wersion_steps` | **步骤识别** | step_0 空盘 → step_1 只有底部 → step_2 +支撑柱 → step_3 +罗盘 → complete 完整体 |
+
+> 类别名与采集图片前缀一致（`base_*.png` 等），以图片文件名为准。
+
+## 标注操作（X-AnyLabeling）
+
+图片已按类别归档好，**打开一个类别目录就只标那一类**，不会标错类别：
+
+```
+datasets/annotate/parts/
+├─ base/images/     base_1.png … base_60.png        ← 底部
+├─ support/images/  support_1.png … support_60.png  ← 支撑柱
+├─ compass/images/  compass_1.png … compass_60.png  ← 罗盘
+└─ top/images/      top_1.png … top_60.png          ← 盘
+```
+
+**步骤 1**：X-AnyLabeling 打开某个类别的 `images/` 目录（例如 `parts/base/images/`）。
+**步骤 2**：每张图给目标物体画**一个矩形框**，类别名**必须**填该类别的名字：
+
+| 目录 | 标注时填的类别名 |
+|---|---|
+| `parts/base/` | `base` |
+| `parts/support/` | `support` |
+| `parts/compass/` | `compass` |
+| `parts/top/` | `top` |
+
+> 类别名写错（比如在 base 目录里填 `bottom`）会导致转换时报"未知类别"，所以照上表填。
+
+**步骤 3**：导出格式选 **YOLO Detection**，导出/保存到 `vision_yolo_train/annotations/`。
+（也可以直接导出 YOLO `.txt`，转换脚本两种都认。）
+
+**步骤 4**：标注完跑转换 + 划分：
+
+```bash
+python vision_yolo_train/tools/convert_anylabeling.py --data wersion_parts
+python vision_yolo_train/tools/split_dataset.py --data wersion_parts --val-ratio 0.2
+python vision_yolo_train/tools/check_labels.py --data wersion_parts
+python vision_yolo_train/train_detect.py --data wersion_parts
+```
+
+`split_dataset.py` 会按类别分层划分训练集/验证集（每个类别在 val 里都有代表），
+并把 yaml 的 `path` 改写成当前机器的绝对路径。
+
+## 重新归档图片（如果又采集了新数据）
+
+新采集的图片都在 `images/parts/` 下按前缀命名，重新归档即可（复制模式，原图保留）：
+
+```bash
+python vision_yolo_train/tools/prepare_annotation.py          # 预览
+python vision_yolo_train/tools/prepare_annotation.py --apply  # 执行
+```
+
+编号会自动接续，已归档的图片不会重复复制。`test_*.png` 是通用样本（可能含多个类别），
+默认跳过归档，需要时用 `--skip` 调整。
 
 预训练权重 **`weights/yolo26n.pt` 已随仓库提供**，克隆即可开训，无需额外下载。
 
