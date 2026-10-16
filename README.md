@@ -66,6 +66,36 @@ python test_run.py --source vision_yolo_train\images\parts\test_1.png --save
 
 热键：`S` 保存当前帧（含识别结果），`Q` / `ESC` 退出。
 
+## 3.1 数据采集按钮（采训练数据用）
+
+实时预览时画面底部有 5 个按钮，**点按钮**或按**数字键**即可把当前画面直接存进
+YOLO 训练工程的 `vision_yolo_train/images/parts/`：
+
+| 按钮 | 键 | 保存文件 | 对应类别 |
+|---|---|---|---|
+| base | `1` | `base_N.png` | 底部 bottom |
+| support | `2` | `support_N.png` | 支撑柱 support_pillar |
+| compass | `3` | `compass_N.png` | 罗盘 compass |
+| top | `4` | `top_N.png` | 盘（待确认对应类别） |
+| 全部 | `5` | `test_N.png` | 通用样本（什么都拍） |
+
+**编号自动接续已有数据**：扫描目标目录里已有的 `<前缀>_<数字>`，从**最大编号 +1** 开始，
+不会覆盖任何已有文件，也**不会回收中间的缺号**（例如已有 `compass_1..30`，
+下一个就是 `compass_31`；`compass_14` 缺号会一直空着，避免和历史数据混淆）。
+
+启动时会打印每个按钮的续号位置：
+
+```
+采集按钮（点按钮或按数字键）：
+   [1] base       -> vision_yolo_train/images/parts\base_N.png   从 base_1 续起
+   [3] compass    -> vision_yolo_train/images/parts\compass_N.png   从 compass_31 续起
+```
+
+关闭按钮：`--no-capture`；换保存位置：`--capture-root <目录>`。
+
+> 保存的是**当前完整画面**（含区域框与按钮，作为采集时的视觉记录）。
+> 采集瞬间按钮会变绿并显示"已存"。
+
 绿色阈值现场可调（光照不同时）：
 
 ```bash
