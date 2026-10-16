@@ -855,7 +855,12 @@ def main():
     capture_root = Path(args.capture_root).expanduser().resolve() if args.capture_root else ROOT
     deck = CaptureDeck(capture_root, font=label_font, enabled=capture_enabled)
     if capture_enabled:
-        deck.layout(frame0 if is_image else view)          # 先按画面尺寸排一次版
+        # 用画面尺寸先排一次版。注意 view 在循环里才产生，这里不能引用它，
+        # 所以按已知的输出尺寸造一个临时占位数组（布局只看尺寸）。
+        layout_size = (frame0 if is_image
+                       else np.empty((max(info["height"], 1), max(info["width"], 1), 3),
+                                     dtype=np.uint8))
+        deck.layout(layout_size)
         print("采集按钮（点按钮或按数字键）：")
         for name, prefix, rel, hotkey in CAPTURE_SPECS:
             folder = capture_root / rel
