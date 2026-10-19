@@ -167,6 +167,13 @@ def build_parser():
                         help="标出识别区域（像素，缩放前坐标）")
     parser.add_argument("--no-window", action="store_true",
                         help="不开预览窗口（树莓派/Docker 无显示器时用；配合 --save 定期存图）")
+    parser.add_argument("--fb", default=None, metavar="DEV",
+                        help="把画面直接写进 framebuffer（无图形界面的外接屏），例如 /dev/fb0；"
+                             "给了它就不再开窗口、不响应按键，Ctrl+C 退出")
+    parser.add_argument("--fb-mode", choices=("fit", "crop", "stretch"), default="fit",
+                        help="framebuffer 缩放方式：fit=留黑边等比 / crop=裁切铺满 / stretch=拉伸")
+    parser.add_argument("--fb-rotate", type=int, choices=(0, 90, 180, 270), default=0,
+                        help="framebuffer 输出旋转角度（屏幕竖装时用）")
     parser.add_argument("--snapshot", action="store_true", help="抓一帧保存后退出")
     parser.add_argument("--save", action="store_true",
                         help="把带识别结果的画面存到 --save-dir（图片源存单张结果图）")

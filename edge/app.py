@@ -15,6 +15,7 @@ from edge.camera import fourcc_str, open_camera, probe_modes
 from edge.capture import CaptureDeck, on_mouse
 from edge.constants import CAPTURE_SPECS, DEFAULT_TRAY_MIN_FILL, DEFAULT_YOLO_WEIGHTS, DEFAULT_ZONES_FILE, GREEN_MIN_FILL_RATIO, HAND_COLOR, IMAGE_SUFFIXES, PART_COLOR, TRAIL_COLOR, WINDOW, ZONE_COLORS
 from edge.drawing import draw_detection, draw_machine_state, draw_overlay, draw_stage, draw_trail, draw_zone, load_cjk_font
+from edge.framebuffer import FbWriter
 from edge.imaging import contours_to_boxes, prepare_detect_input, save_image, take_right
 from edge.parts import PartTracker
 from edge.stage_match import StageMatcher
@@ -207,11 +208,18 @@ def main():
     print(f"项目根目录：{ROOT}")
     print(f"输出目录  ：{save_dir}")
     show_window = ((not args.snapshot) and (not args.no_window)
-                   and not is_image and hasattr(cv2, "imshow"))
+                   and not is_image and hasattr(cv2, "imshow") and not args.fb)
     if show_window:
         cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
+    elif args.fb:
+        print(f"framebuffer 输出：{args.fb}")
     else:
         print("无 GUI 或使用 --snapshot/图片源：只保存图像，不显示窗口")
+
+    # 外接屏（framebuffer）：树莓派 Lite 没装 X，cv2.imshow 不可用，直接把画面写 /dev/fb0
+    fb_screen = FbWriter(args.fb, mode=args.fb_mode, rotate=args.fb_rotate) if args.fb else None
+    if fb_screen is not None:
+        print(f"          屏幕 {fb_screen.describe()}；Ctrl+C 退出，按键/采集按钮不可用")
 
     frame_count, last_time, last_count, fps_now = 0, time.time(), 0, 0.0
     sharpness, brightness = 0.0, 0.0
@@ -487,7 +495,10 @@ def main():
                         print(f"零件跟踪未启用：{tracker_parts.error}")
                 break
 
-            if show_window:
+            if fb_screen is not None:
+                fb_screen.show(annotate)                  # 外接屏：整帧直接写 framebuffer
+                keys_pressed = 255
+            elif show_window:
                 cv2.imshow(WINDOW, annotate)
                 key = cv2.waitKey(1) & 0xFF
                 keys_pressed = key                        # 下一帧开头消费，用于采集/退出
@@ -506,5 +517,7 @@ def main():
             tracker_parts.runner.close()                  # http 后端的后台线程要收干净
         if show_window:
             cv2.destroyAllWindows()
+        if fb_screen is not None:
+            fb_screen.close()                             # framebuffer 用完要还回去
         if capture_enabled:
             print(deck.summary())
