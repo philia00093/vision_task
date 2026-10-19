@@ -49,7 +49,10 @@ def main() -> int:
                         help="其余参数原样透传给 ultralytics，例如 --extra cos_lr=True")
     args = parser.parse_args()
 
-    data_yaml = Path(args.yaml) if args.yaml else paths.DATASETS.get(args.data)
+    # 注意：paths.DATASETS 是 datasets 目录（Path），数据集名→yaml 的映射是
+    # paths.DATASET_YAML（本文件顶部已别名成 DATASETS）。以前写成 paths.DATASETS.get(...)
+    # 会直接 AttributeError: 'WindowsPath' object has no attribute 'get'，训练根本起不来。
+    data_yaml = Path(args.yaml) if args.yaml else DATASETS.get(args.data)
     if data_yaml is None or not data_yaml.is_file():
         print(f"[错误] 找不到数据配置：{data_yaml}；可选 {list(paths.DATASETS)}")
         return 2
@@ -72,11 +75,17 @@ def main() -> int:
     model.train(
         data=str(data_yaml), epochs=args.epochs, imgsz=args.imgsz, batch=args.batch,
         device=args.device, workers=args.workers, patience=args.patience,
-        project=str(paths.ROOT / "vision_yolo_train" / "runs"), name=args.name or args.data,
+        # paths.ROOT 已经是 vision_yolo_train/ 了，别再拼一层；
+        # 用 paths.RUNS 才是 README 说的 runs/<数据集>/weights/best.pt
+        project=str(paths.RUNS), name=args.name or args.data,
         resume=args.resume, cache=args.cache, seed=args.seed, exist_ok=True, **overrides)
 
-    print(f"\n[完成] 权重在 {paths.ROOT / 'vision_yolo_train' / 'runs' / (args.name or args.data)}/vision_yolo_train/weights/")
-    print("       用起来：python train_detect.py --data wersion_steps  继续训步骤模型")
+    run_dir = paths.RUNS / (args.name or args.data)
+    print(f"\n[完成] 权重在 {run_dir / 'weights'}（best.pt / last.pt）")
+    print(f"       验证集：yolo detect val model=\"{run_dir / 'weights' / 'best.pt'}\" "
+          f"data=\"{data_yaml}\" split=val")
+    print(f"       测试集：yolo detect val model=\"{run_dir / 'weights' / 'best.pt'}\" "
+          f"data=\"{data_yaml}\" split=test")
     return 0
 
 

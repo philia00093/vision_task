@@ -1,0 +1,21 @@
+# 构建上下文里不要的东西（树莓派只跑末端，训练数据和数据集一概不进镜像）
+# 现在这些目录很大：images/parts 约 800MB、datasets 约 1.6GB、runs 约 17MB。
+vision_yolo_train/images/parts/
+vision_yolo_train/datasets/
+vision_yolo_train/runs/
+vision_yolo_train/labels/
+vision_yolo_train/annotations/
+
+# 运行产物 / 缓存 / 版本库
+output/
+zones.json
+__pycache__/
+**/__pycache__/
+*.pyc
+.git/
+.gitattributes
+*.bat
+
+# 文档保留（体积可忽略），日志和临时图不要
+*.log
+*.tmp

@@ -8,9 +8,11 @@
 #   compass 罗盘     <- compass_*.png
 #   top     盘/顶盖  <- top_*.png
 #
-# 目录：datasets/wersion_parts/{images,labels}/{train,val,raw}
-#   标注时在 datasets/annotate/parts/<类别>/images/ 看图
-#   导出到 annotations/ 后跑 convert_anylabeling.py 收集标签
+# 目录：datasets/wersion_parts/{images,labels}/{train,val,test,raw}
+#   标注时在 datasets/annotate/parts/<类别>/images/ 看图，或直接在 images/parts/ 里标
+#   两种位置 convert_anylabeling.py 都能收集
+#   划分：split_dataset.py --data wersion_parts --test-prefix test --test-count 20 --clean
+#   （test 从 test_*.png 里按 seed 随机抽 20 张，其余按类别分层分 train/val）
 names:
   0: base
   1: support
@@ -19,3 +21,4 @@ names:
 path: D:\wang_robot\3_1\version_task\vision_task\vision_yolo_train\datasets\wersion_parts
 train: images/train
 val: images/val
+test: images/test

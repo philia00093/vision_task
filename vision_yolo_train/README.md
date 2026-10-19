@@ -40,10 +40,26 @@ datasets/annotate/parts/
 
 ```bash
 python vision_yolo_train/tools/convert_anylabeling.py --data wersion_parts
-python vision_yolo_train/tools/split_dataset.py --data wersion_parts --val-ratio 0.2
-python vision_yolo_train/tools/check_labels.py --data wersion_parts
+python vision_yolo_train/tools/split_dataset.py --data wersion_parts --val-ratio 0.2 --test-prefix test --test-count 20 --clean
+python vision_yolo_train/tools/check_labels.py --data wersion_parts --splits train val test
 python vision_yolo_train/train_detect.py --data wersion_parts
 ```
+
+> `--test-prefix test --test-count 20`：从 `test_*.png` 里随机抽 20 张单独放 `images/test`，
+> 并在 yaml 里写 `test: images/test`。抽签用 `--seed`（默认 0），同一 seed 每次都抽到同一批图，
+> 想换一批就改 `--seed`。不加这两个参数就只分 train/val。
+> 训练完用 `yolo detect val model=<权重> data=<yaml> split=test` 在测试集上评估。
+
+> 标注文件放哪都行：用 `annotate_parts.bat` 导出到 `annotations/` 可以，直接打开
+> `images/parts/` 标（json 会存在图片旁边）也可以，`convert_anylabeling.py` 两个位置都认，
+> 并且会去 `datasets/annotate/`、`images/` 里找同名图片一起收进数据集。
+
+> **补标/重标之后要重跑划分，而且必须加 `--clean`**：
+> `split_dataset.py` 只往里复制、不清旧文件，不加 `--clean` 会让上一轮的图
+> 同时留在 train 和 val 里（等于验证集泄题）。
+> ```bash
+> python vision_yolo_train/tools/split_dataset.py --data wersion_parts --clean
+> ```
 
 `split_dataset.py` 会按类别分层划分训练集/验证集（每个类别在 val 里都有代表），
 并把 yaml 的 `path` 改写成当前机器的绝对路径。
@@ -158,6 +174,7 @@ python vision_yolo_train/train_detect.py --data wersion_parts --extra cos_lr=Tru
 | 现象 | 原因 / 处理 |
 |---|---|
 | `check_labels.py` 报"一张图片都没有" | 正常：还没标数据。先抽帧 → 标注 → `convert_anylabeling.py` |
+| 转换后 train/val 里混进上一轮的图 | 重跑划分时加 `--clean`，否则旧 split 的文件会残留（可能同一张图同时在 train 和 val） |
 | 训练报 `images not found` | 跑一次 `split_dataset.py --data <数据集>`，它会把 yaml 的 `path` 改写成当前机器的绝对路径 |
 | `download_weights.py` 报 404 | 权重名写错。只有 `yolo26n/s/m/l/x.pt`，**没有 `yolo26.pt`** |
 | 训练很慢 | 降低 `--imgsz` 或 `--batch`；确认用的是 GPU（`--device 0`） |

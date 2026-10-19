@@ -1,0 +1,39 @@
+# 树莓派侧：一条命令起末端。
+#
+#   docker compose -f docker-compose.pi.yml up -d --build     # 第一次（构建+启动）
+#   docker compose -f docker-compose.pi.yml logs -f           # 看日志
+#   docker compose -f docker-compose.pi.yml restart           # 改完代码重启（代码是挂进去的）
+#   docker compose -f docker-compose.pi.yml down              # 停掉
+#
+# 跑之前先改下面 command 里的 --server-url 为**电脑**的局域网 IP。
+services:
+  edge:
+    build: .
+    image: vision-edge:pi
+    container_name: vision-edge
+    restart: unless-stopped
+    # host 网络：树莓派是**主动连**电脑的（--server-url），不需要端口映射；
+    # host 模式下容器里看到的地址和树莓派自己一模一样，最省事。
+    network_mode: host
+    # USB 摄像头：只挂用得到的设备节点（第二个摄像头再加一行 /dev/video1）
+    devices:
+      - /dev/video0:/dev/video0
+    volumes:
+      # 代码直接挂进去：改完代码 restart 就生效，不用重建镜像。
+      # 采集的图（images/parts）、zones.json、output/ 也都落在树莓派自己的目录里。
+      - ./:/app
+      # 想在树莓派桌面上看预览窗口才需要下面这行，并且要先在宿主机执行 xhost +local:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    environment:
+      - DISPLAY=${DISPLAY:-:0}
+    # 这里的参数就是 edge/run_edge.py 的命令行参数（Dockerfile 里的 ENTRYPOINT 是 python edge/run_edge.py）
+    command:
+      - --infer-backend=http
+      - --server-url=http://192.168.1.10:8080     # ← 改成你电脑的局域网 IP
+      - --wire=binary                             # 二进制帧（下行恒定 160 字节）
+      - --no-window                               # 树莓派接了显示器就去掉这一行
+      - --yolo-interval=10                        # 每 10 帧发一次图（30fps 相机 ≈ 每秒 3 次）
+      - --zone-interval=10
+      - --zone-width=640                          # 料盘掩码算半尺寸，Pi 上省 CPU
+      - --detect-width=0                          # 不额外缩放，省一次 resize
+      - --stage-interval=10
