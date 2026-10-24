@@ -123,6 +123,19 @@ class Sampler:
         with self.lock:
             return self.jpeg
 
+    def forward(self, path: str, body: bytes | None = None,
+                content_type: str = "application/json") -> tuple[int, bytes]:
+        """把请求转发给上游（保存图片用）。返回 (状态码, 响应体)。"""
+        request = urllib.request.Request(self.upstream + path, data=body, method="POST",
+                                        headers={"Content-Type": content_type})
+        try:
+            with urllib.request.urlopen(request, timeout=5) as response:
+                return response.status, response.read()
+        except urllib.error.HTTPError as error:
+            return error.code, error.read()
+        except Exception as error:
+            return 502, json.dumps({"ok": False, "error": str(error)}).encode("utf-8")
+
     def close(self) -> None:
         self._stop.set()
 
@@ -167,6 +180,16 @@ PAGE = r"""<!doctype html>
     <div class="row"><span>拉取往返（本机）</span><span class="big" id="fetch">–</span></div>
     <div class="row muted"><span>上游帧序号</span><span id="count">–</span></div>
     <div class="row muted"><span>检出目标</span><span id="det">–</span></div>
+
+    <h2>保存</h2>
+    <div class="row">
+      <input id="label" type="text" placeholder="标签（可空）"
+             style="flex:1;background:#0d1117;color:#dfe4ea;border:1px solid #30363d;
+                    border-radius:4px;padding:4px 6px">
+      <button id="save" style="margin-left:8px;background:#238636;color:#fff;border:0;
+              border-radius:4px;padding:5px 12px;cursor:pointer">保存当前帧</button>
+    </div>
+    <p class="muted" id="saveMsg" style="margin:6px 0 0"></p>
 
     <h2>最近 2 分钟</h2>
     <div class="row"><span class="muted">推理</span><span class="muted" id="inferStat">–</span></div>
@@ -276,6 +299,20 @@ async function tick(){
     el('link').className = 'tag bad';
   }
 }
+document.getElementById('save').addEventListener('click', async () => {
+  const label = encodeURIComponent(document.getElementById('label').value.trim());
+  const msg = document.getElementById('saveMsg');
+  msg.textContent = '保存中…';
+  try {
+    const res = await (await fetch('/save' + (label ? ('?label=' + label) : ''),
+                                   {method: 'POST'})).json();
+    msg.textContent = res.ok ? ('已保存：' + res.path + '（' + res.bytes + ' 字节，无画框）')
+                             : ('失败：' + (res.error || '未知错误'));
+  } catch (e) {
+    msg.textContent = '失败：' + e.message;
+  }
+});
+
 setInterval(tick, 120);
 tick();
 </script></body></html>
@@ -297,6 +334,16 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def do_POST(self):                                      # noqa: N802
+        path = self.path.split("?", 1)[0].rstrip("/") or "/"
+        if path == "/save":
+            query = self.path.split("?", 1)
+            suffix = "?" + query[1] if len(query) > 1 else ""
+            status, body = self.sampler.forward("/save" + suffix)
+            self._send(body, "application/json; charset=utf-8", status)
+            return
+        self._send(b"not found", "text/plain; charset=utf-8", 404)
+
     def do_GET(self):                                       # noqa: N802
         path = self.path.split("?", 1)[0].rstrip("/") or "/"
         sampler = self.sampler
@@ -309,6 +356,12 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(b"no frame yet", "text/plain; charset=utf-8", 503)
                 return
             self._send(jpeg, "image/jpeg")
+            return
+        if path == "/save":
+            query = self.path.split("?", 1)
+            suffix = "?" + query[1] if len(query) > 1 else ""
+            status, body = self.sampler.forward("/save" + suffix)
+            self._send(body, "application/json; charset=utf-8", status)
             return
         if path == "/stats":
             snap = sampler.snapshot()

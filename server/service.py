@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import numpy as np
 import cv2
+import urllib.parse
 import sys
 import time
 import json
@@ -29,6 +30,9 @@ except ImportError:                                      # 从别处起 Python �
     import protocol as wire
 
 from server.model import DEFAULT_WEIGHTS, LAST, LAST_LOCK, STATE, infer, load_model
+
+# 保存"干净帧"的目录：存的是树莓派上传的原始 JPEG，**没有任何画框**
+SNAPSHOT_DIR = Path(__file__).resolve().parent.parent / "output" / "snapshots"
 from server.web import PAGE_HTML
 
 
@@ -97,13 +101,20 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._send_bytes(jpeg, "image/jpeg")
             return
+        if path == "/save":
+            self._handle_save()
+            return
         self._send({"ok": False,
-                    "error": "未知路径。可用：/ 、/health 、/state 、/frame.jpg 、POST /detect"}, 404)
+                    "error": "未知路径。可用：/ 、/health 、/state 、/frame.jpg 、"
+                             "/save 、POST /detect 、POST /save"}, 404)
 
     def do_POST(self):                                     # noqa: N802
         path = self.path.split("?", 1)[0].rstrip("/") or "/"
         if path == "/stage":                              # 填下行帧的预留字段（联调用）
             self._handle_stage()
+            return
+        if path == "/save":                               # 保存最近一帧的干净图
+            self._handle_save()
             return
         if path != "/detect":
             self._send({"ok": False, "error": "未知路径，用 /health 或 POST /detect"}, 404)
@@ -177,6 +188,68 @@ class Handler(BaseHTTPRequestHandler):
             return
         self.server_seq = (self.server_seq + 1) & 0xFFFFFFFF
         self._send_bytes(body, "application/octet-stream")
+
+    # ------------------------------------------------------------ 保存干净帧
+    def _handle_save(self) -> None:
+        """把**最近一帧原始 JPEG**（树莓派上传的，没有画框）存到 output/snapshots/。
+
+        触发方式：
+            GET  /save?label=base          （浏览器/curl 直接点）
+            POST /save  {"label": "base"}  （monitor 的按钮走这个）
+        label 只进文件名，允许中文；最终文件名形如 20261024_130512_123_base.jpg。
+        """
+        with LAST_LOCK:
+            jpeg = LAST["jpeg"]
+            size = list(LAST["size"])
+            stamp = LAST["time"]
+        if not jpeg:
+            self._send({"ok": False, "error": "还没收到任何帧，无法保存"}, 404)
+            return
+
+        label = ""
+        query = self.path.split("?", 1)
+        if len(query) > 1:
+            params = urllib.parse.parse_qs(query[1])
+            label = (params.get("label") or [""])[0]
+        if self.command == "POST":
+            try:
+                length = int(self.headers.get("Content-Length", "0") or 0)
+                if length > 0:
+                    payload = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+                    label = str(payload.get("label", label) or "")
+            except Exception:
+                pass
+        # HTTP 里的路径按 latin-1 解出来，中文会变乱码；这里还原成 UTF-8。
+        # 同时支持 percent-encoding（浏览器/encodeURIComponent 会编码）。
+        try:
+            label = urllib.parse.unquote(label)
+        except Exception:
+            pass
+        try:
+            label = label.encode("latin-1").decode("utf-8")
+        except Exception:
+            pass
+        label = "".join(ch for ch in label if ch not in '\\/:*?"<>|').strip()[:32]
+
+        SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+        # 按文件头判断真实格式（二进制通路上来是 JPEG，JSON 通路可能收到 PNG）
+        if jpeg[:8] == b"\x89PNG\r\n\x1a\n":
+            suffix = ".png"
+        elif jpeg[:2] == b"\xff\xd8":
+            suffix = ".jpg"
+        else:
+            suffix = ".bin"
+        now = time.strftime("%Y%m%d_%H%M%S") + f"_{int((time.time() % 1) * 1000):03d}"
+        name = f"{now}_{label}{suffix}" if label else f"{now}{suffix}"
+        target = SNAPSHOT_DIR / name
+        try:
+            target.write_bytes(jpeg)
+        except OSError as error:
+            self._send({"ok": False, "error": f"写盘失败：{error}"}, 500)
+            return
+        print(f"[save] {target}  {len(jpeg)} 字节  {size}")
+        self._send({"ok": True, "path": str(target), "bytes": len(jpeg),
+                    "size": size, "label": label, "frame": LAST.get("count", 0)})
 
     # ------------------------------------------------------------ 预留字段联调
     def _handle_stage(self) -> None:
@@ -287,6 +360,7 @@ def main() -> int:
     print(f"       树莓派这样调： python test_run.py --infer-backend http "
           f"--server-url http://{hosts[0]}:{args.port}"
           + (f" --server-token {args.token}" if args.token else ""))
+    print(f"       保存干净帧：GET /save?label=base  →  {SNAPSHOT_DIR}")
     print("       提示：手机/树莓派要能打开这个网址，Windows 防火墙第一次会弹窗，"
           "选「专用网络」允许")
     print("       Ctrl+C 退出\n")
