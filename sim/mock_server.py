@@ -143,7 +143,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/health":
             self._send_json({"ok": True, "model": "MOCK (no weights)", "mock": True,
                              "names": list(wire.CLS_NAMES),
-                             "imgsz": 0, "device": "none"})
+                             "imgsz": 0, "device": "none",
+                             "window": 6, "ack": True})
             return
         if path == "/state":
             self._send_json({"ok": True, "boxes": faker.last_boxes,
@@ -211,7 +212,9 @@ class Handler(BaseHTTPRequestHandler):
         cost_us = int(random.uniform(8, 25) * 1000)
         try:
             body = wire.encode_result_frame(image["seq"], boxes, step=step, flags=flags,
-                                            hand=hand, seq=SERVER_SEQ, cost_us=cost_us)
+                                            hand=hand, seq=SERVER_SEQ, cost_us=cost_us,
+                                            ack_seq=image["seq"], rcv_nxt=image["seq"],
+                                            win=6)
         except wire.FrameError as error:
             self._send_json({"ok": False, "error": f"回包组不起来：{error}"}, 500)
             return

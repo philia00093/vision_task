@@ -10,7 +10,8 @@ from collections import deque
 from pathlib import Path
 
 from edge.constants import DEFAULT_COVER_DELTA, DEFAULT_COVER_MARGIN, DEFAULT_COVER_WINDOW, DEFAULT_TRAY_MIN_SHARE, DEFAULT_ZONE_LOCK_FRAMES
-from edge.zones import pick_tray_boxes, split_touching_trays, tray_pair_ok
+from edge.zones import (normalize_tray_boxes, pick_tray_boxes, split_touching_trays,
+                        tray_pair_ok)
 
 
 def parse_zones(text) -> list:
@@ -131,9 +132,10 @@ class ZoneTracker:
         if not real:
             return []
         merged = split_touching_trays(mask, real)
-        picked = pick_tray_boxes(merged, frame_area)
+        picked = pick_tray_boxes(merged, frame_area, mask=mask)
         if len(picked) == 2 and tray_pair_ok(picked[0], picked[1], frame_area):
-            return picked
+            # 暗色掩膜只吃到料盘下半截（上半反光），用"两个同型号方盘"的先验补完整
+            return normalize_tray_boxes(picked, mask.shape[:2])
         return []
 
     # ------------------------------------------------------------ 每帧

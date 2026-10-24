@@ -39,6 +39,8 @@ class Handler(BaseHTTPRequestHandler):
     iou = 0.5
     device = "0"
     server_seq = 0                    # 下行帧自己的序号（客户端不靠它配对，靠 ref_seq）
+    window = 6                        # 允许客户端同时在飞的帧数（滑动窗口）
+    rcv_nxt = 0                       # 累积确认：目前收到的连续最高帧号
 
     # 静音默认的逐请求日志，只在出错时打印，免得刷屏
     def log_message(self, fmt, *args):
@@ -72,7 +74,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/health":
             self._send({"ok": True, "model": Path(STATE["weights"]).name,
                         "names": [STATE["names"][i] for i in sorted(STATE["names"])],
-                        "imgsz": self.imgsz, "device": self.device})
+                        "imgsz": self.imgsz, "device": self.device,
+                        "window": self.window, "ack": True,
+                        "max_frame": wire.RESULT_FRAME_SIZE})
             return
         if path == "/state":                              # 最近一次检测结果
             with LAST_LOCK:
@@ -160,10 +164,14 @@ class Handler(BaseHTTPRequestHandler):
         with LAST_LOCK:
             LAST.update(step=step, flags=flags, hand=hand)
         try:
+            Handler.rcv_nxt = image_info["seq"]
             body = wire.encode_result_frame(image_info["seq"], boxes, step=step,
-                                           flags=flags, hand=hand,
-                                           cost_us=int(cost * 1000),
-                                           seq=self.server_seq)
+                                            flags=flags, hand=hand,
+                                            cost_us=int(cost * 1000),
+                                            seq=self.server_seq,
+                                            ack_seq=image_info["seq"],
+                                            rcv_nxt=image_info["seq"],
+                                            win=self.window)
         except wire.FrameError as error:
             self._send({"ok": False, "error": f"回包组不起来：{error}"}, 500)
             return
@@ -250,6 +258,8 @@ def main() -> int:
     parser.add_argument("--iou", type=float, default=0.5)
     parser.add_argument("--device", default="0", help="0=第一块 GPU，cpu=CPU")
     parser.add_argument("--token", default="", help="简单口令：客户端要带同样的 X-Token")
+    parser.add_argument("--window", type=int, default=6,
+                        help="滑动窗口：允许树莓派同时在飞的帧数（默认 6）")
     args = parser.parse_args()
 
     if not Path(args.weights).is_file():
@@ -259,6 +269,7 @@ def main() -> int:
 
     Handler.imgsz, Handler.conf = args.imgsz, args.conf
     Handler.iou, Handler.device = args.iou, args.device
+    Handler.window = max(1, min(int(args.window), 32))
     STATE["token"] = args.token
 
     server = ThreadingHTTPServer((args.host, args.port), Handler)

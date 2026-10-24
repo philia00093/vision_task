@@ -7,7 +7,7 @@ from __future__ import annotations
 import cv2
 import argparse
 
-from edge.constants import BACKENDS, DEFAULT_COVER_DELTA, DEFAULT_COVER_MARGIN, DEFAULT_COVER_WINDOW, DEFAULT_DARK_V_MAX, DEFAULT_GREEN_HI, DEFAULT_GREEN_LO, DEFAULT_INFER_BACKEND, DEFAULT_JPEG_QUALITY, DEFAULT_KF_ACC, DEFAULT_KF_MEAS, DEFAULT_LINE_WIDTH, DEFAULT_SERVER_TIMEOUT, DEFAULT_SERVER_URL, DEFAULT_TRACK_MAX_AGE, DEFAULT_TRAIL_LEN, DEFAULT_WIRE, DEFAULT_YOLO_CONF, DEFAULT_YOLO_IMGSZ, DEFAULT_YOLO_INTERVAL, DEFAULT_YOLO_IOU, DEFAULT_YOLO_WEIGHTS, DEFAULT_ZONES_FILE, DEFAULT_ZONE_INTERVAL, DEFAULT_ZONE_LOCK_FRAMES, DEFAULT_ZONE_SCAN_TOP, DEFAULT_ZONE_WIDTH, GREEN_MIN_AREA_RATIO, GREEN_ZONE_MIN_AREA_RATIO, LABEL_FONT_SIZE
+from edge.constants import BACKENDS, DEFAULT_HTTP_WINDOW, DEFAULT_COVER_DELTA, DEFAULT_COVER_MARGIN, DEFAULT_COVER_WINDOW, DEFAULT_DARK_V_MAX, DEFAULT_GREEN_HI, DEFAULT_GREEN_LO, DEFAULT_INFER_BACKEND, DEFAULT_JPEG_QUALITY, DEFAULT_KF_ACC, DEFAULT_KF_MEAS, DEFAULT_LINE_WIDTH, DEFAULT_SERVER_TIMEOUT, DEFAULT_SERVER_URL, DEFAULT_TRACK_MAX_AGE, DEFAULT_TRAIL_LEN, DEFAULT_WIRE, DEFAULT_YOLO_CONF, DEFAULT_YOLO_IMGSZ, DEFAULT_YOLO_INTERVAL, DEFAULT_YOLO_IOU, DEFAULT_YOLO_WEIGHTS, DEFAULT_ZONES_FILE, DEFAULT_ZONE_INTERVAL, DEFAULT_ZONE_LOCK_FRAMES, DEFAULT_ZONE_SCAN_TOP, DEFAULT_ZONE_WIDTH, GREEN_MIN_AREA_RATIO, GREEN_ZONE_MIN_AREA_RATIO, LABEL_FONT_SIZE
 from edge.stage_match import (DEFAULT_ANGLE_RANGE, DEFAULT_ANGLE_STEP,
                               DEFAULT_REFINE_STEP, DEFAULT_STAGE_INTERVAL,
                               DEFAULT_STAGE_MARGIN, DEFAULT_STAGE_SIZE,
@@ -39,6 +39,10 @@ DETECT_ARGUMENTS = (
                                help="http 后端：发出去的 JPEG 质量（越小越省带宽、越糊）")),
     (("--server-timeout",), dict(type=float, default=DEFAULT_SERVER_TIMEOUT,
                                  help="http 后端：单次请求超时秒数，超时这一轮就没结果")),
+    (("--http-window",), dict(type=int, default=DEFAULT_HTTP_WINDOW,
+                               help="http 后端：滑动窗口大小（同时在飞的帧数）。"
+                                    "吞吐 ≈ 窗口 / 往返，Wi-Fi 下 6 帧约能到 30fps；"
+                                    "实际以服务端 /health 回的 window 为准")),
     (("--wire",), dict(choices=("binary", "json"), default=DEFAULT_WIRE,
                        help="http 后端的帧格式：binary=protocol.py 的二进制帧"
                             "（上行图像帧、下行恒定 160 字节，带 step/布尔/手部框/耗时）"
@@ -95,7 +99,8 @@ DETECT_ARGUMENTS = (
     (("--no-trail",), dict(action="store_true",
                            help="不画运动轨迹（框照常）")),
     (("--line-width",), dict(type=int, default=DEFAULT_LINE_WIDTH,
-                             help="框线粗细（默认 1，细；觉得看不清再调大）")),
+                             help="框线粗细（源图像素）。外接屏会把 1280x960 缩到 800x600，"
+                                     "所以 1px 在屏上只有 0.6px；默认 3")),
     (("--label-size",), dict(type=int, default=LABEL_FONT_SIZE,
                              help="框上标签的字号（默认 14；调大能看清但会盖住零件）")),
     (("--yolo-weights",), dict(default=None,
@@ -158,11 +163,15 @@ def build_parser():
     parser.add_argument("--height", type=int, help="直接指定帧高")
     parser.add_argument("--fps", type=int, default=30, help="请求帧率（默认 30）")
     parser.add_argument("--fourcc", default="MJPG", help="像素格式，默认 MJPG（YUY2 会极卡）")
-    parser.add_argument("--buffersize", type=int, default=1, help="驱动缓冲帧数，1 最省延迟")
+    parser.add_argument("--buffersize", type=int, default=2,
+                        help="驱动缓冲帧数：1 最省延迟但只有 24fps（实测），2 是 40fps 的平衡点")
     parser.add_argument("--layout", choices=("auto", "side_by_side", "top_bottom", "none"),
                         default="auto", help="auto 对半切；none 表示整帧即单目（右目）")
     parser.add_argument("--warmup", type=int, default=30, help="启动丢弃帧数")
     parser.add_argument("--resize", type=int, default=0, help="缩放到该宽度（0 不缩放）")
+    parser.add_argument("--loop-fps", type=float, default=30.0,
+                        help="主循环固定节拍（0=不限制，跑满 CPU）。锁到 30 后采集/入队/出队"
+                             "同一个节拍，帧率不再忽快忽慢")
     parser.add_argument("--roi-px", type=int, nargs=4, metavar=("X", "Y", "W", "H"),
                         help="标出识别区域（像素，缩放前坐标）")
     parser.add_argument("--no-window", action="store_true",
@@ -175,6 +184,19 @@ def build_parser():
     parser.add_argument("--fb-rotate", type=int, choices=(0, 90, 180, 270), default=0,
                         help="framebuffer 输出旋转角度（屏幕竖装时用）")
     parser.add_argument("--snapshot", action="store_true", help="抓一帧保存后退出")
+    parser.add_argument("--no-sync-display", action="store_true",
+                        help="画面不跟结果走：显示最新帧（框会比画面慢一个网络往返）")
+    parser.add_argument("--dequeue-at", type=int, default=20,
+                        help="接收队列攒够多少帧才开始出队（之后每帧弹最老的一帧）")
+    parser.add_argument("--preroll", type=int, default=0,
+                        help="接收缓冲区**首次**攒够多少帧才开始出图（一次性，之后不再判断）")
+    parser.add_argument("--preroll-timeout", type=float, default=3.0,
+                        help="预充最多等多少秒，超时就先出图（防止一直不出）")
+    parser.add_argument("--sync-seconds", type=float, default=8.0,
+                        help="画面/结果配对的环形缓冲保留多少秒（默认 1.0，"
+                             "要覆盖网络往返；RTT 0.5s 就得留 0.5s 以上）")
+    parser.add_argument("--sync-max-frames", type=int, default=40,
+                        help="环形缓冲最多存几帧（防内存爆掉，1.8G 的派约 40 帧=150MB）")
     parser.add_argument("--save", action="store_true",
                         help="把带识别结果的画面存到 --save-dir（图片源存单张结果图）")
     parser.add_argument("--probe", action="store_true", help="逐模式实测帧率后退出")

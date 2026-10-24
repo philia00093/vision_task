@@ -64,7 +64,13 @@
     92   20   hand          手部槽（**预留**，每槽 20 字节，格式同检测槽）
     112  4    step          u8 装配步数 0=未知，1~4=做到第几步；+ 3 字节 rsv
     116  8    flags         b0,b1,b2 各 u8（0/1，**3 组布尔**）+ 5 字节 rsv
-    124  16   tail          尾部预留（全 0），以后加字段先吃这里
+    124  4    ack_seq       u32 **确认帧**：服务端已经处理完的这一帧（= 该图像的上行 seq）
+    128  4    rcv_nxt       u32 累积确认：服务端收到的连续最高帧号
+    132  2    win           u16 服务端还能接几帧（窗口，0=没上报）
+    134  6    rsv           保留（全 0）
+
+    ↑ 这 16 字节原来叫 tail（尾部预留），现在被 **ACK 确认** 占用了前 10 字节，
+      依旧在 CRC 之前，整帧还是 160 字节，不用改版本。
 
 **检测槽 / 手部槽（20 字节，小端）**：
 
@@ -80,6 +86,20 @@
 固定 4 组是为了**定长**——解析不用循环找边界。目标多于 4 个时，要么只发最可信的 4 个，
 要么把 `tail` 扩展到 8 组并升版本（留了 16 字节，正好再放 0 组……所以真要 8 组请升 VERSION，
 别偷偷改长度）。
+
+============================ ACK 帧（type=3，32 字节）============================
+
+握手/独立确认用。载荷 12 字节：
+
+    偏移 长度 字段
+    0    4    ack_seq      u32 已处理完的帧号
+    4    4    rcv_nxt      u32 连续收到的最高帧号（累积确认）
+    8    2    win          u16 还能接几帧
+    10   2    rsv
+
+它和结果帧里的 ack 字段冗余：走 HTTP 时结果帧自带 ack，够用；
+将来换成裸 TCP 流、服务端要主动告诉客户端"我收到了但这一帧我不打算回结果"时，
+就发一个独立的 ACK 帧（省掉一次推理和 160 字节回包）。
 
 ============================ 枚举与约定 ============================
 
@@ -166,7 +186,10 @@ SLOT_SIZE = SLOT.size                        # 20
 RESULT_HEAD = struct.Struct("<IBBBBI")
 STEP_BLOCK = struct.Struct("<4B")            # step + 3 字节保留
 FLAG_BLOCK = struct.Struct("<8B")            # 3 组布尔 + 5 字节保留
-TAIL_SIZE = 16                               # 尾部保留
+TAIL_SIZE = 16                               # 尾部 16 字节（前 10 字节现在是 ACK 字段）
+TAIL_BLOCK = struct.Struct("<IIH6x")         # ack_seq, rcv_nxt, win（正好 16）
+ACK_PAYLOAD = struct.Struct("<IIH2x")        # ACK 帧载荷（12 字节）
+assert TAIL_BLOCK.size == TAIL_SIZE and ACK_PAYLOAD.size == 12
 
 RESULT_PAYLOAD_SIZE = (RESULT_HEAD.size + SLOT_SIZE * MAX_DET + SLOT_SIZE
                        + STEP_BLOCK.size + FLAG_BLOCK.size + TAIL_SIZE)
@@ -330,7 +353,8 @@ def _pack_slot(cls: int, valid: bool, conf, quad) -> bytes:
 
 def encode_result_frame(ref_seq: int, detections=(), step: int = STEP_UNKNOWN,
                         flags=(0, 0, 0), hand=None, seq: int = 0,
-                        cost_us: int = 0) -> bytes:
+                        cost_us: int = 0, ack_seq: int = 0, rcv_nxt: int = 0,
+                        win: int = 0) -> bytes:
     """识别结果 → 一整帧（PC 侧调用），恒为 160 字节。
 
     detections：可迭代，每项 `{"cls":0~3, "conf":0.873, "quad":[(x,y)×4]}`
@@ -374,7 +398,8 @@ def encode_result_frame(ref_seq: int, detections=(), step: int = STEP_UNKNOWN,
 
     payload += STEP_BLOCK.pack(step & 0xFF, 0, 0, 0)
     payload += FLAG_BLOCK.pack(*[1 if flag else 0 for flag in flags], 0, 0, 0, 0, 0)
-    payload += b"\x00" * TAIL_SIZE
+    payload += TAIL_BLOCK.pack(ack_seq & 0xFFFFFFFF, rcv_nxt & 0xFFFFFFFF,
+                               max(0, min(int(win), 0xFFFF)))
 
     if len(payload) != RESULT_PAYLOAD_SIZE:              # 结构体改了长度就会在这里炸
         raise FrameError(f"结果载荷 {len(payload)} 字节，应为 {RESULT_PAYLOAD_SIZE}")
@@ -408,6 +433,7 @@ def parse_result_frame(frame: bytes) -> dict:
     offset += STEP_BLOCK.size
     b0, b1, b2, _f1, _f2, _f3, _f4, _f5 = FLAG_BLOCK.unpack_from(payload, offset)
     offset += FLAG_BLOCK.size
+    ack_seq, rcv_nxt, win = TAIL_BLOCK.unpack_from(payload, offset)
     offset += TAIL_SIZE
 
     if step != STEP_UNKNOWN and not STEP_RANGE[0] <= step <= STEP_RANGE[1]:
@@ -418,6 +444,7 @@ def parse_result_frame(frame: bytes) -> dict:
 
     return {"seq": info["seq"], "ref_seq": ref_seq, "det_count": det_count,
             "step": step, "flags": (b0, b1, b2),
+            "ack_seq": int(ack_seq), "rcv_nxt": int(rcv_nxt), "win": int(win),
             "cost_us": cost_us, "cost_ms": cost_us / 1000.0,
             "detections": [_unpack_slot(slot) for slot in slots[:det_count]],
             "hand": _unpack_slot(hand_raw) if hand_raw[1] else None}
@@ -431,6 +458,31 @@ def _unpack_slot(slot) -> dict:
             "name": CLS_NAMES[cls] if 0 <= cls < len(CLS_NAMES) else f"cls{cls}",
             "valid": bool(valid), "conf": conf / 1000.0,
             "quad": quad, "xyxy": xyxy_from_quad(quad)}
+
+
+# ---------------------------------------------------------------- ACK 帧（type=3）
+def encode_ack_frame(ack_seq: int, rcv_nxt: int = 0, win: int = 0, seq: int = 0) -> bytes:
+    """组一个独立的确认帧（32 字节）。
+
+    走 HTTP 时一般用不到（结果帧自带 ack）；换成裸 TCP 流、或者服务端想
+    "只确认不推理"时用它，省一次推理 + 一个 160 字节结果帧。
+    """
+    payload = ACK_PAYLOAD.pack(int(ack_seq) & 0xFFFFFFFF, int(rcv_nxt) & 0xFFFFFFFF,
+                               max(0, min(int(win), 0xFFFF)))
+    return build_frame(TYPE_ACK, seq, payload)
+
+
+def parse_ack_frame(frame: bytes) -> dict:
+    """解析确认帧 → {'seq','ack_seq','rcv_nxt','win'}。"""
+    info = parse_frame(frame)
+    if info["type"] != TYPE_ACK:
+        raise FrameError(f"这不是 ACK 帧（type={info['type']}）")
+    payload = info["payload"]
+    if len(payload) != ACK_PAYLOAD.size:
+        raise FrameError(f"ACK 载荷 {len(payload)} 字节，应为 {ACK_PAYLOAD.size}")
+    ack_seq, rcv_nxt, win = ACK_PAYLOAD.unpack_from(payload, 0)
+    return {"seq": info["seq"], "ack_seq": int(ack_seq),
+            "rcv_nxt": int(rcv_nxt), "win": int(win)}
 
 
 # ---------------------------------------------------------------- 调试
@@ -448,6 +500,10 @@ def describe(frame: bytes) -> str:
         return (f"{kind} seq={body['seq']} {body['width']}x{body['height']}"
                 f" fmt={body['format']} q={body['quality']}"
                 f" jpeg={len(body['jpeg'])}B 共 {len(frame)}B")
+    if info["type"] == TYPE_ACK:
+        body = parse_ack_frame(frame)
+        return (f"{kind} seq={info['seq']} ack={body['ack_seq']} "
+                f"rcv_nxt={body['rcv_nxt']} win={body['win']} 共 {len(frame)}B")
     if info["type"] == TYPE_RESULT:
         body = parse_result_frame(frame)
         found = ", ".join(f"{d['name']}@{d['conf']:.2f}" for d in body["detections"]) or "无"
@@ -529,6 +585,16 @@ def _self_test() -> int:
     except FrameError:
         check("类型不符报错", True)
 
+    print("ACK 字段 / ACK 帧：")
+    acked = parse_result_frame(encode_result_frame(5, boxes, step=2, ack_seq=5,
+                                                   rcv_nxt=7, win=4))
+    check("结果帧回带 ack_seq/rcv_nxt/win",
+          (acked["ack_seq"], acked["rcv_nxt"], acked["win"]) == (5, 7, 4))
+    check("加了 ack 仍是 160 字节", len(encode_result_frame(5, boxes, ack_seq=5)) == 160)
+    ack = parse_ack_frame(encode_ack_frame(9, rcv_nxt=11, win=6))
+    check("ACK 帧往返", (ack["ack_seq"], ack["rcv_nxt"], ack["win"]) == (9, 11, 6))
+    check("ACK 帧恒 32 字节", len(encode_ack_frame(9, 11, 6)) == 32)
+
     print("TCP 拆包：")
     stream = encode_image_frame(jpeg, 1280, 960, seq=1) + b"junk" + result + result[:50]
     frames, rest = split_frames(stream)
@@ -540,5 +606,15 @@ def _self_test() -> int:
     return 0 if not failures else 1
 
 
+def _print_format() -> int:
+    """打印当前帧格式（文件头的字节表），方便对照抓包。"""
+    doc = __doc__ or ""
+    start = doc.find("============================ 通用帧头")
+    print(doc[start:] if start >= 0 else doc)
+    return 0
+
+
 if __name__ == "__main__":
+    if "--format" in sys.argv:
+        sys.exit(_print_format())
     sys.exit(_self_test())

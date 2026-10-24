@@ -1,0 +1,16 @@
+[Unit]
+Description=vision_task inference server (best.pt on GPU)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=wzk
+WorkingDirectory=/home/wzk/study/vision_task
+ExecStart=/home/wzk/miniforge3/envs/yolo26/bin/python -u server/run_server.py \
+    --host 0.0.0.0 --port 8080 --imgsz 640 --device 0
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

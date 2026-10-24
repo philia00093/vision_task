@@ -1,0 +1,17 @@
+[Unit]
+Description=vision_task latency monitor (port 2000, read-only viewer)
+After=network-online.target vision-server.service
+Wants=vision-server.service
+
+[Service]
+Type=simple
+User=wzk
+Group=wzk
+# 2000 是普通端口，用 wzk 跑就行，不需要 root
+ExecStart=/usr/bin/python3 -u /home/wzk/study/vision_task/server/monitor.py \
+    --host 0.0.0.0 --port 2000 --upstream http://127.0.0.1:8080
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

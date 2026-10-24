@@ -35,11 +35,12 @@ class PartTracker:
                  kf_acc=DEFAULT_KF_ACC, kf_meas=DEFAULT_KF_MEAS,
                  server_url=DEFAULT_SERVER_URL, server_token="",
                  jpeg_quality=DEFAULT_JPEG_QUALITY, server_timeout=DEFAULT_SERVER_TIMEOUT,
-                 wire=DEFAULT_WIRE):
+                 wire=DEFAULT_WIRE, window=6):
         self.runner = YoloRunner(weights, backend=backend, imgsz=imgsz, conf=conf,
                                  iou=iou, device=device, server_url=server_url,
                                  server_token=server_token, jpeg_quality=jpeg_quality,
-                                 server_timeout=server_timeout, wire_format=wire)
+                                 server_timeout=server_timeout, wire_format=wire,
+                                 window=window)
         self.trail_len = max(int(trail_len), 2)
         self.track_max_age = max(int(track_max_age), 1)
         self.kf_acc = float(kf_acc)

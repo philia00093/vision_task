@@ -7,6 +7,7 @@ from __future__ import annotations
 import numpy as np
 import cv2
 import time
+from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from edge.capture import CaptureDeck, on_mouse
 from edge.constants import CAPTURE_SPECS, DEFAULT_TRAY_MIN_FILL, DEFAULT_YOLO_WEIGHTS, DEFAULT_ZONES_FILE, GREEN_MIN_FILL_RATIO, HAND_COLOR, IMAGE_SUFFIXES, PART_COLOR, TRAIL_COLOR, WINDOW, ZONE_COLORS
 from edge.drawing import draw_detection, draw_machine_state, draw_overlay, draw_stage, draw_trail, draw_zone, load_cjk_font
 from edge.framebuffer import FbWriter
+from edge.grabber import FrameGrabber
 from edge.imaging import contours_to_boxes, prepare_detect_input, save_image, take_right
 from edge.parts import PartTracker
 from edge.stage_match import StageMatcher
@@ -139,7 +141,7 @@ def main():
                                     server_token=args.server_token,
                                     jpeg_quality=args.jpeg_quality,
                                     server_timeout=args.server_timeout,
-                                    wire=args.wire)
+                                    wire=args.wire, window=args.http_window)
     if detect:
         if zone_mode == "green":
             print(f"料盘识别：绿色 HSV {green_lo}~{green_hi}（--zone-mode green）")
@@ -221,7 +223,33 @@ def main():
     if fb_screen is not None:
         print(f"          屏幕 {fb_screen.describe()}；Ctrl+C 退出，按键/采集按钮不可用")
 
+    # 相机取帧放进独立线程：解码 20.8ms 不再阻塞主循环（只对实时相机，视频文件要顺序读）
+    grabber = FrameGrabber(cap, timeout=args.server_timeout) if (cap is not None and not is_video) else None
+    last_serial = -1
+    frame_stamp = 0.0
+    # ---- 画面跟着结果走 ----
+    # sync_ring：seq -> (那一帧, 那一帧时刻的框, 采集时刻)。结果回来时按 ref_seq 取对应帧，
+    # 这样"屏幕上看到的画面"和"画在上面的框"永远是同一时刻的，代价是整屏慢约一个网络往返。
+    sync_display = not args.no_sync_display
+    # 环形缓冲：seq -> (那一帧, 那一帧时刻的框, 采集时刻)。按"时间"淘汰，
+    # 不是按帧数——网络往返 500ms 时，8 帧（0.27s）根本盖不住，结果永远找不到对应帧，
+    # 只能退回实时帧，看起来就"框和画面对不上 + 跳"。
+    sync_ring: "OrderedDict[int, tuple]" = OrderedDict()
+    sync_hits = sync_misses = 0
+    display_stamp = 0.0
+    display_seq = -1                 # 已经显示到哪一帧：只许往前，不许倒退
+    play_seq = 0                     # 入队用的本地帧号（不依赖网络是否发出去）
+    last_display = None              # 上一帧显示内容，乱序时复用它而不是跳回实时帧
+    # ---- 接收缓冲的"一次性预充" ----
+    # 启动阶段先攒够 --preroll 帧（约 0.1~0.3 秒）再开始出图，避免开局抖动/空跳；
+    # 攒够之后这个判断就永久关掉，不再影响后续显示。
+    preroll_done = args.preroll <= 0
+    preroll_deadline = time.time() + max(args.preroll_timeout, 0.1)
+
     frame_count, last_time, last_count, fps_now = 0, time.time(), 0, 0.0
+    last_report = 0.0
+    tick_period = (1.0 / args.loop_fps) if args.loop_fps and args.loop_fps > 0 else 0.0
+    next_tick = time.time()                                 # 固定节拍的下一个时间点
     sharpness, brightness = 0.0, 0.0
     keys_pressed = 255                                        # 上一帧的按键（255 = 无）
     tracker_zones = ZoneTracker(occlude_ratio=args.occlude_ratio, zones=preset_zones,
@@ -260,6 +288,15 @@ def main():
                 if frame_count:
                     break
                 frame, frame_count = frame0, frame_count + 1
+            elif grabber is not None:
+                # 相机：从后台线程拿"最新一帧"（解码与主循环并行）
+                frame, last_serial, frame_stamp, fresh = grabber.read(last_serial)
+                if frame is None:
+                    print(f"读取画面失败（{grabber.error or '相机没有输出'}）")
+                    break
+                frame_count += 1
+                if frame_count <= args.warmup or float(frame[::8, ::8].mean()) < 12:
+                    continue
             else:
                 ok, frame = cap.read()
                 if not ok:
@@ -296,6 +333,9 @@ def main():
                 # 沿用绿料盘时代的 0.55 会把料盘整个滤掉。
                 fill_floor = (GREEN_MIN_FILL_RATIO if zone_mode == "green"
                               else DEFAULT_TRAY_MIN_FILL)
+                # 注意：这里用**原始**暗色掩膜。料盘顶部的反光会把掩膜挖掉一块，
+                # 但那是"开口"不是"洞"，闭运算补不回来；框的尺寸由后面的
+                # normalize_tray_boxes（两个同型号方盘的先验）修正。
                 boxes = contours_to_boxes(mask, zone_input.shape[1], zone_input.shape[0],
                                           min_area_ratio=args.min_area,
                                           min_fill_ratio=fill_floor,
@@ -310,6 +350,7 @@ def main():
                 tracker_zones.update(boxes, mask, zone_area, v_channel, zone_scale)
 
             # ---------------- 零件：每 --yolo-interval 帧跑一次 YOLO + 每帧卡尔曼预测 ----
+            submitted_now = False
             if detect and tracker_parts is not None:
                 if frame_count == 1 or frame_count % max(args.yolo_interval, 1) == 0:
                     # 只上传"工作区"（--upload-crop）：面积小 → JPEG 小、编码快，
@@ -317,7 +358,9 @@ def main():
                     crop = args.upload_crop
                     if crop:
                         cx, cy, cw, ch = crop
-                        source = view[max(0, cy):max(0, cy) + cw, max(0, cx):max(0, cx) + ch]
+                        # 注意：行是 y 方向（高 ch），列是 x 方向（宽 cw）；原来写反了
+                        x0, y0 = max(0, cx), max(0, cy)
+                        source = view[y0:y0 + ch, x0:x0 + cw]
                         if source.size == 0:            # 裁到画面外了，退回整幅
                             source, offset = view, (0.0, 0.0)
                         else:
@@ -327,6 +370,7 @@ def main():
                     detect_input, detect_scale = prepare_detect_input(source, args.detect_width)
                     tracker_parts.detect(detect_input, detect_scale, offset,
                                          view_size=(view.shape[1], view.shape[0]))
+                    submitted_now = True
                     # --snapshot + http 后端：结果要一个来回才到，单帧抓图会存出"没框"的图。
                     # 这里再提交几次直到拿到结果（只影响一次性抓图，实时预览不受影响）。
                     if args.snapshot and tracker_parts.runner.remote is not None:
@@ -336,6 +380,19 @@ def main():
                             tracker_parts.detect(detect_input, detect_scale, offset,
                                                  view_size=(view.shape[1], view.shape[0]))
                 detections = tracker_parts.tick()      # 每帧都跑：预测补框，显示才连贯
+                # 每一帧都入队（包括因为窗口满被背压丢掉、没发给电脑的那些）。
+                # 之前只存"发出去的帧"，链路一旦掉速，队列就被抽干 → 水位不足 → 画面卡住。
+                if sync_display:
+                    play_seq += 1
+                    if True:
+                        now_t = frame_stamp or time.time()
+                        sync_ring[play_seq] = (view.copy(), detections, now_t)
+                        # 按时间淘汰（留够覆盖 RTT 的历史），再按帧数兜底防爆内存
+                        limit = now_t - max(args.sync_seconds, 0.2)
+                        while sync_ring and next(iter(sync_ring.values()))[2] < limit:
+                            sync_ring.popitem(last=False)
+                        while len(sync_ring) > max(args.sync_max_frames, 4):
+                            sync_ring.popitem(last=False)
 
             # ---------------- 阶段：每 --stage-interval 帧认一次「装配区」 ----------------
             # 只裁装配区那一块图，跟零件框无关；旋转遍历一整圈（默认 1°），取最像的那张参考图。
@@ -348,6 +405,26 @@ def main():
                         started = time.time()
                         stage_result = stage.match(view, region=region)
                         stage_cost = (time.time() - started) * 1000.0
+
+            # ---- 选要显示的帧：有同步结果就用"结果对应的那一帧"，否则用最新帧 ----
+            display_stamp = frame_stamp
+            # ---- 播放缓冲：攒够 dequeue_at 帧才出队，之后每帧弹最老的一帧（FIFO） ----
+            # 这样屏上是"按采集顺序、平滑播放"的画面，代价是固定滞后约 dequeue_at 帧。
+            # 队列低于水位就保持上一帧，等重新攒够（不跳帧、不乱序）。
+            if detect and tracker_parts is not None and sync_display and sync_ring:
+                if not preroll_done:
+                    if len(sync_ring) >= args.dequeue_at or time.time() >= preroll_deadline:
+                        preroll_done = True
+                        print(f"[sync] 缓冲就绪：{len(sync_ring)} 帧，开始出队", flush=True)
+                if len(sync_ring) >= args.dequeue_at:
+                    seq_key, entry = sync_ring.popitem(last=False)   # 最老的一帧
+                    view, detections, display_stamp = entry
+                    display_seq = seq_key
+                    last_display = entry
+                    sync_hits += 1
+                elif last_display is not None:
+                    view, detections, display_stamp = last_display     # 水位不足：保持
+                    sync_misses += 1
 
             if detect:
                 # 先占住状态栏区域拿到高度，区域标签与右上角提示据此避开顶部
@@ -399,11 +476,29 @@ def main():
             if now - last_time >= 0.5:                      # 滑动窗口瞬时帧率（不含启动预热）
                 fps_now = (frame_count - last_count) / max(now - last_time, 1e-6)
                 last_time, last_count = now, frame_count
+                if now - last_report >= 5.0:                 # 远程调试要看主循环真实帧率
+                    last_report = now
+                    lag_ms = (now - display_stamp) * 1000.0 if display_stamp else 0.0
+                    net = ""
+                    if tracker_parts is not None and tracker_parts.runner.remote is not None:
+                        remote_now = tracker_parts.runner.remote
+                        net = (f" | 网络往返 {remote_now.round_trip_ms:.0f}ms"
+                               f" 在飞 {remote_now.inflight}"
+                               f" 迟到 {remote_now.stale_results}")
+                    hit = (sync_hits / max(sync_hits + sync_misses, 1) * 100.0
+                           if (sync_hits + sync_misses) else 0.0)
+                    print(f"[fps] 主循环 {fps_now:.1f} fps | 画面滞后 {lag_ms:.0f}ms"
+                          f"（含网络往返）{net} | 同步命中 {hit:.0f}%"
+                          f" | 队列 {len(sync_ring)}帧"
+                          f" | 已处理 {frame_count} 帧", flush=True)
             gray = None
-            if frame_count % 10 == 0 or sharpness is None:   # 清晰度每 10 帧算一次
-                gray = cv2.cvtColor(view, cv2.COLOR_BGR2GRAY)
+            # 清晰度统计：1280x960 的 Laplacian 要 ~50ms，是主循环最尖的尖峰。
+            # 改成每 60 帧、在半分辨率上算（~12ms），数值仍能反映"糊没糊"。
+            if frame_count % 60 == 0 or sharpness is None:
+                small = view[::2, ::2]
+                gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
                 sharpness = float(cv2.Laplacian(gray, cv2.CV_64F).var())
-                brightness = float(gray.mean())
+                brightness = float(small.mean())
             status = (f"RIGHT EYE {view.shape[1]}x{view.shape[0]} {info['fourcc']} | "
                       f"fps {fps_now:.1f} | mean {brightness:.0f} | sharp {sharpness:.1f}")
             if detect:
@@ -417,6 +512,7 @@ def main():
                     if remote is not None:
                         # 本机耗时不代表什么，真正要看的是"整轮往返"和"掉帧数"
                         status += (f" | net {remote.round_trip_ms:.0f}ms"
+                                   f" win{remote.window} fly{remote.inflight}"
                                    f" drop {remote.dropped}")
                         if remote.wire_format == "binary":
                             # 下行帧里电脑端报的：装配步数 + 3 个布尔（b101 = 1,0,1）
@@ -495,6 +591,15 @@ def main():
                         print(f"零件跟踪未启用：{tracker_parts.error}")
                 break
 
+            # ---- 固定节拍：采集/入队/出队同一个频率，帧率不再忽快忽慢 ----
+            if tick_period > 0:
+                next_tick += tick_period
+                sleep_for = next_tick - time.time()
+                if sleep_for > 0:
+                    time.sleep(sleep_for)
+                else:
+                    next_tick = time.time()               # 落后太多就重新对齐，不追帧
+
             if fb_screen is not None:
                 fb_screen.show(annotate)                  # 外接屏：整帧直接写 framebuffer
                 keys_pressed = 255
@@ -511,6 +616,8 @@ def main():
             else:
                 keys_pressed = 255                        # 无窗口：视为没有按键
     finally:
+        if grabber is not None:
+            grabber.close()
         if cap is not None:                               # 图片源没有 VideoCapture
             cap.release()
         if tracker_parts is not None:

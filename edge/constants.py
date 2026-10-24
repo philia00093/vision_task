@@ -32,6 +32,9 @@ DEFAULT_TRAY_SPLIT_RATIO = 1.15     # 宽/高超过它就怀疑是两盘并排 �
 
 DEFAULT_TRAY_SEAM_DROP = 0.75       # 缝那列的暗像素要低于中间带中位数的这个比例才认
 
+DEFAULT_TRAY_FILL_KERNEL = 25        # 料盘找框前先做一次大核闭运算：料盘上半部分反光（V 很高），
+                                     # 暗色掩膜会挖掉一块；边缘一圈仍是暗的，闭运算能把中间补回来
+
 DEFAULT_TRAY_MIN_FILL = 0.30        # 料盘中间有大圆凹槽，填充率偏低，门槛要放宽
 
 DEFAULT_ZONE_LOCK_FRAMES = 3        # 连续这么多帧都认出两个盘就锁定，之后不再重认
@@ -67,7 +70,8 @@ HAND_COLOR = (255, 0, 255)       # 手部框（电脑端下发的手部识别预
 
 TRAIL_COLOR = (0, 165, 255)      # 轨迹（越旧越暗）
 
-DEFAULT_LINE_WIDTH = 1           # 框线粗细（细一点，别糊住零件）
+DEFAULT_LINE_WIDTH = 3           # 框线粗细：源图 1px 到 1024x600 屏上只剩 0.6px，
+                                 # 太小看不见；3px 缩完约 1.9px，正好
 
 DEFAULT_YOLO_WEIGHTS = "vision_yolo_train/runs/wersion_parts/weights/best.pt"
 
@@ -88,6 +92,8 @@ DEFAULT_SERVER_URL = "http://127.0.0.1:8080"   # http 后端：电脑上 infer_s
 DEFAULT_JPEG_QUALITY = 80        # 发给电脑的 JPEG 质量（80 时 1280x960 约 100~150KB）
 
 DEFAULT_WIRE = "binary"          # 和电脑通信的帧格式：binary=protocol.py 的二进制帧 / json=老的 JSON
+
+DEFAULT_HTTP_WINDOW = 6        # 允许同时在飞的帧数（滑动窗口），吞吐 ≈ window / RTT
 
 DEFAULT_SERVER_TIMEOUT = 3.0     # 单次请求超时（秒）：留够首帧冷启动的余量；
 
