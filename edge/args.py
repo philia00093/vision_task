@@ -9,6 +9,7 @@ import argparse
 
 from edge.constants import BACKENDS, DEFAULT_HTTP_WINDOW, DEFAULT_COVER_DELTA, DEFAULT_COVER_MARGIN, DEFAULT_COVER_WINDOW, DEFAULT_DARK_V_MAX, DEFAULT_GREEN_HI, DEFAULT_GREEN_LO, DEFAULT_INFER_BACKEND, DEFAULT_JPEG_QUALITY, DEFAULT_KF_ACC, DEFAULT_KF_MEAS, DEFAULT_LINE_WIDTH, DEFAULT_SERVER_TIMEOUT, DEFAULT_SERVER_URL, DEFAULT_TRACK_MAX_AGE, DEFAULT_TRAIL_LEN, DEFAULT_WIRE, DEFAULT_YOLO_CONF, DEFAULT_YOLO_IMGSZ, DEFAULT_YOLO_INTERVAL, DEFAULT_YOLO_IOU, DEFAULT_YOLO_WEIGHTS, DEFAULT_ZONES_FILE, DEFAULT_ZONE_INTERVAL, DEFAULT_ZONE_LOCK_FRAMES, DEFAULT_ZONE_SCAN_TOP, DEFAULT_ZONE_WIDTH, GREEN_MIN_AREA_RATIO, GREEN_ZONE_MIN_AREA_RATIO, LABEL_FONT_SIZE
 from edge.stage_match import (DEFAULT_ANGLE_RANGE, DEFAULT_ANGLE_STEP,
+                              DEFAULT_KP_GATE, DEFAULT_MIN_INLIERS,
                               DEFAULT_REFINE_STEP, DEFAULT_STAGE_INTERVAL,
                               DEFAULT_STAGE_MARGIN, DEFAULT_STAGE_SIZE,
                               MIN_STAGE_SCORE, STAGE_DEFAULT_DIR)
@@ -96,6 +97,8 @@ DETECT_ARGUMENTS = (
     # ---- 零件检测+跟踪（训练好的 YOLO 权重）----
     (("--no-yolo",), dict(action="store_true",
                           help="不加载零件模型，只做料盘区域识别")),
+    (("--no-track",), dict(action="store_true",
+                            help="不做卡尔曼跟踪（零件框只按检测更新，不预测、不画轨迹）")),
     (("--no-trail",), dict(action="store_true",
                            help="不画运动轨迹（框照常）")),
     (("--line-width",), dict(type=int, default=DEFAULT_LINE_WIDTH,
@@ -124,13 +127,29 @@ DETECT_ARGUMENTS = (
                                "调小=更信检测（更跟手）")),
     # ---- 阶段识别（基础视觉：旋转遍历 + 模板匹配，和"零件跟踪"并列共存）----
     (("--no-stage",), dict(action="store_true", help="关掉阶段识别")),
+    (("--stage-method",), dict(choices=("cascade", "sift", "grad"), default="cascade",
+                               help="阶段匹配算法：cascade=按关键点数分流"
+                                    "（少→稠密块近邻，多→SIFT，推荐）；"
+                                    "sift=只用特征点；grad=旧的梯度模板法")),
+    (("--stage-kp-gate",), dict(type=int, default=DEFAULT_KP_GATE,
+                                help="关键点数门槛：低于它走近邻（光面阶段），"
+                                     "高于它走 SIFT（有齿/有孔阶段）")),
+    (("--stage-min-inliers",), dict(type=int, default=DEFAULT_MIN_INLIERS,
+                                    help="SIFT 分支内点数低于它就记 unknown")),
     (("--stage-dir",), dict(default=STAGE_DEFAULT_DIR,
                             help="阶段参考图目录（平铺=文件名，子目录=目录名+多样本）")),
     (("--stage-region",), dict(type=int, nargs=4, metavar=("X", "Y", "W", "H"),
                                default=None,
                                help="强制指定装配区裁剪窗口；不给就用锁定后的装配区框")),
+    (("--stage-period",), dict(type=float, default=0.5,
+                               help="每隔多少秒识别一次阶段（按时间，不按帧数）")),
+    (("--stage-window",), dict(type=float, default=1.0,
+                               help="判定窗口（秒）：窗口内多数一致才采纳，单帧抖动不翻牌")),
+    (("--stage-edges",), dict(action="store_true",
+                              help="先偏导求边缘再匹配（边界图），抑制托盘/背景纹理；"
+                                   "纯 SIFT 模式下 0/1 步明显变好，级联模式下会让关键点门槛失效")),
     (("--stage-interval",), dict(type=int, default=DEFAULT_STAGE_INTERVAL,
-                                 help="每多少帧识别一次阶段（不用每帧）")),
+                                 help="[旧] 每多少帧识别一次；已被 --stage-period 取代")),
     (("--angle-step",), dict(type=float, default=DEFAULT_ANGLE_STEP,
                              help="旋转遍历步长（度）；默认 1° 走一整圈")),
     (("--angle-min",), dict(type=float, default=DEFAULT_ANGLE_RANGE[0],

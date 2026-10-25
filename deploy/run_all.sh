@@ -48,7 +48,7 @@ start_server() {
     if busy 8080; then ok "识别服务已在跑（8080）"; return; fi
     [ -f "$WEIGHTS" ] || { bad "找不到权重 $WEIGHTS"; return 1; }
     setsid nohup "$PY" -u "$ROOT/server/run_server.py" \
-        --host 0.0.0.0 --port 8080 --imgsz 640 --device 0 --window 8 \
+        --host 0.0.0.0 --port 8080 --imgsz 960 --device 0 --window 16 \
         --weights "$WEIGHTS" > /tmp/server.log 2>&1 < /dev/null &
     disown
     for _ in $(seq 1 30); do busy 8080 && break; sleep 1; done

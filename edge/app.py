@@ -7,7 +7,7 @@ from __future__ import annotations
 import numpy as np
 import cv2
 import time
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from datetime import datetime
 from pathlib import Path
 
@@ -15,15 +15,41 @@ from edge.args import build_parser
 from edge.camera import fourcc_str, open_camera, probe_modes
 from edge.capture import CaptureDeck, on_mouse
 from edge.constants import CAPTURE_SPECS, DEFAULT_TRAY_MIN_FILL, DEFAULT_YOLO_WEIGHTS, DEFAULT_ZONES_FILE, GREEN_MIN_FILL_RATIO, HAND_COLOR, IMAGE_SUFFIXES, PART_COLOR, TRAIL_COLOR, WINDOW, ZONE_COLORS
-from edge.drawing import draw_detection, draw_machine_state, draw_overlay, draw_stage, draw_trail, draw_zone, load_cjk_font
+from edge.drawing import (_measure_label, draw_detection, draw_machine_state,
+                          draw_overlay, draw_stage, draw_trail, draw_zone,
+                          draw_text_box, load_cjk_font)
 from edge.framebuffer import FbWriter
 from edge.grabber import FrameGrabber
 from edge.imaging import contours_to_boxes, prepare_detect_input, save_image, take_right
 from edge.parts import PartTracker
-from edge.stage_match import StageMatcher
+from edge.stage_match import CascadeStageMatcher, SiftStageMatcher, StageMatcher
 from edge.project import ROOT, ensure_dir
 from edge.zone_tracker import ZoneTracker, load_zones, parse_zones
 from edge.zones import zone_mask
+
+
+def commit_stage(history, window, now):
+    """把最近 `window` 秒的阶段判定做多数表决，返回要显示的结论（可能 None）。
+
+    "连续 1 秒识别"就是这里：单帧认出来不算数，窗口里同样的标签要占够数才采纳；
+    票数不够就沿用上一次的结论（不改 stage_result），标签不会一闪一闪。
+    """
+    horizon = now - max(window, 0.1)
+    while history and history[0][0] < horizon:
+        history.popleft()
+    if not history:
+        return None
+    votes = {}
+    for _ts, item in history:
+        votes.setdefault(item.get("label") or "", []).append(item)
+    label, items = max(votes.items(), key=lambda kv: (len(kv[1]), kv[1][-1].get("score", 0)))
+    need = max(2, int(len(history) * 0.6 + 0.999))
+    if len(items) < need and len(history) > 1:
+        return None
+    winner = dict(items[-1])
+    winner["score"] = sum(i.get("score", 0.0) for i in items) / len(items)
+    winner["votes"] = f"{len(items)}/{len(history)}"
+    return winner
 
 
 def main():
@@ -141,7 +167,8 @@ def main():
                                     server_token=args.server_token,
                                     jpeg_quality=args.jpeg_quality,
                                     server_timeout=args.server_timeout,
-                                    wire=args.wire, window=args.http_window)
+                                    wire=args.wire, window=args.http_window,
+                                    track=not args.no_track)
     if detect:
         if zone_mode == "green":
             print(f"料盘识别：绿色 HSV {green_lo}~{green_hi}（--zone-mode green）")
@@ -184,11 +211,23 @@ def main():
             stage_dir = Path(args.stage_dir).expanduser()
             if not stage_dir.is_absolute():
                 stage_dir = ROOT / stage_dir
-            stage = StageMatcher.from_directory(
-                stage_dir, size=args.stage_size, angle_step=args.angle_step,
-                angle_range=(args.angle_min, args.angle_max),
-                refine_step=args.refine_step, margin=args.stage_margin,
-                rotate=not args.no_rotate, min_score=args.stage_min_score)
+            if args.stage_method == "cascade":
+                stage = CascadeStageMatcher.from_directory(
+                    stage_dir, ref_size=max(args.stage_size * 4, 128),
+                    min_score=args.stage_min_score,
+                    kp_gate=args.stage_kp_gate,
+                    min_inliers=args.stage_min_inliers,
+                    edges=args.stage_edges)
+            elif args.stage_method == "sift":
+                stage = SiftStageMatcher.from_directory(
+                    stage_dir, ref_size=max(args.stage_size * 4, 128),
+                    min_score=args.stage_min_score, edges=args.stage_edges)
+            else:
+                stage = StageMatcher.from_directory(
+                    stage_dir, size=args.stage_size, angle_step=args.angle_step,
+                    angle_range=(args.angle_min, args.angle_max),
+                    refine_step=args.refine_step, margin=args.stage_margin,
+                    rotate=not args.no_rotate, min_score=args.stage_min_score)
             print(stage.describe())
             if not stage.ready:
                 print(f"         参考图目录：{stage_dir}")
@@ -197,7 +236,8 @@ def main():
             else:
                 window = (f"--stage-region {' '.join(str(v) for v in args.stage_region)}"
                           if args.stage_region else "锁定后的装配区框")
-                print(f"         裁剪窗口：{window} | 每 {args.stage_interval} 帧认一次"
+                print(f"         裁剪窗口：{window} | 每 {args.stage_period:.1f}s 认一次"
+                      f" | 判定窗口 {args.stage_window:.1f}s（多数一致才采纳）"
                       f" | 相似度 <{args.stage_min_score:.2f} 记为 unknown")
                 if args.stage_region is None:
                     print("         区域锁定前不输出阶段（没有装配区框就不知道裁哪）"
@@ -235,6 +275,8 @@ def main():
     # 不是按帧数——网络往返 500ms 时，8 帧（0.27s）根本盖不住，结果永远找不到对应帧，
     # 只能退回实时帧，看起来就"框和画面对不上 + 跳"。
     sync_ring: "OrderedDict[int, tuple]" = OrderedDict()
+    assembled_step = 0               # 已经确认完成的装配步数（手离开物料区时锁定）
+    material_occluded = False        # 上一帧物料区是否被遮
     sync_hits = sync_misses = 0
     display_stamp = 0.0
     display_seq = -1                 # 已经显示到哪一帧：只许往前，不许倒退
@@ -261,6 +303,8 @@ def main():
     detections: list[dict] = []      # 零件检测结果；识别间隔之间沿用上一帧
     stage_result = None              # 阶段识别结果；间隔之间沿用上一次（标签不闪）
     stage_cost = 0.0                 # 上一次阶段识别的耗时（ms，Pi 上调参数看这个数）
+    stage_history = deque()          # 最近 --stage-window 秒的判定：(ts, 结果)
+    stage_last_ts = 0.0              # 上一次跑阶段识别的时间（0 = 立刻跑第一次）
 
     # ---- 数据采集按钮：图片落到 vision_yolo_train/images/parts/ ----
     capture_enabled = not args.no_capture
@@ -348,6 +392,11 @@ def main():
                 v_channel = (cv2.cvtColor(zone_input, cv2.COLOR_BGR2HSV)[:, :, 2]
                              if zone_mode != "green" else None)
                 tracker_zones.update(boxes, mask, zone_area, v_channel, zone_scale)
+                # 装配区框内的零件不跟踪（放进去就装好了，静态的）
+                if tracker_parts is not None:
+                    r = tracker_zones.region("装配区")
+                    tracker_parts.exclude_rect = ((r[0], r[1], r[0] + r[2], r[1] + r[3])
+                                                  if r else None)
 
             # ---------------- 零件：每 --yolo-interval 帧跑一次 YOLO + 每帧卡尔曼预测 ----
             submitted_now = False
@@ -394,17 +443,60 @@ def main():
                         while len(sync_ring) > max(args.sync_max_frames, 4):
                             sync_ring.popitem(last=False)
 
-            # ---------------- 阶段：每 --stage-interval 帧认一次「装配区」 ----------------
-            # 只裁装配区那一块图，跟零件框无关；旋转遍历一整圈（默认 1°），取最像的那张参考图。
-            # 间隔之间沿用上次结果，画面上标签就不会每帧跳。
+            # ---------------- 阶段：每 --stage-period 秒认一次「装配区」 ----------------
+            # 只裁装配区那一块图，跟零件框无关；用时间而不是帧数当间隔，
+            # 帧率高低都不会让识别变得忽快忽慢。
+            # 「连续 1 秒识别」：窗口内的判定要**多数一致**才采纳，单帧抖一下不会翻牌。
             if detect and stage is not None:
-                if frame_count == 1 or frame_count % max(args.stage_interval, 1) == 0:
+                now_stage = time.time()
+                if now_stage - stage_last_ts >= max(args.stage_period, 0.05):
+                    stage_last_ts = now_stage
                     region = (tuple(args.stage_region) if args.stage_region
                               else tracker_zones.region("装配区"))
                     if region is not None:
+                        # 参考图是 /save 存下来的"上传裁剪图"（900x500），
+                        # 所以现场也要用同一块做匹配，否则坐标系对不上。
+                        crop = args.upload_crop
+                        if crop:
+                            cx, cy, cw, ch = crop
+                            src = view[cy:cy + ch, cx:cx + cw]
+                            region_c = (region[0] - cx, region[1] - cy, region[2], region[3])
+                        else:
+                            src, region_c = view, region
                         started = time.time()
-                        stage_result = stage.match(view, region=region)
+                        fresh = stage.match(src, region=region_c)
                         stage_cost = (time.time() - started) * 1000.0
+                        if fresh is not None:
+                            stage_history.append((now_stage, fresh))
+                        # 窗口内多数表决：票数不够就沿用上一次结论（不翻牌）
+                        committed = commit_stage(stage_history, args.stage_window, now_stage)
+                        if committed is not None:
+                            if committed.get("label") != (stage_result or {}).get("label"):
+                                extra = (f"距离 {committed.get('dist', 0.0):.3f}"
+                                         if committed.get("method") == "nn"
+                                         else f"内点 {committed.get('inliers', 0)}")
+                                print(f"[阶段] {(stage_result or {}).get('label', '-')} → "
+                                      f"{committed.get('label')}"
+                                      f"（{committed.get('method')} 相似度"
+                                      f" {committed.get('score', 0.0):.3f}，{extra}，"
+                                      f"票 {committed.get('votes', '?')}，"
+                                      f"关键点 {committed.get('kp', 0)}，"
+                                      f"{stage_cost:.0f}ms）", flush=True)
+                            stage_result = committed
+
+            # ---- 手遮住物料区 = 这一次装配完成，锁定当前阶段 ----
+            if detect and tracker_parts is not None:
+                material = next((z for z in tracker_zones.zones if z["name"] == "物料区"), None)
+                covered = bool(material and material.get("box") is not None
+                               and material.get("occluded"))
+                if covered and not material_occluded and stage_result is not None:
+                    label = stage_result.get("label") or ""
+                    if label.startswith("step") and label[4:].isdigit():
+                        number = int(label[4:])
+                        if number > assembled_step:
+                            assembled_step = number
+                            print(f"[装配] 手遮物料区 → 第 {number} 步完成", flush=True)
+                material_occluded = covered
 
             # ---- 选要显示的帧：有同步结果就用"结果对应的那一帧"，否则用最新帧 ----
             display_stamp = frame_stamp
@@ -459,8 +551,12 @@ def main():
                             stage_text = f"阶段 ? {stage_result['score']:.2f}"
                         else:
                             stage_text = (f"阶段 {stage_result['label']}"
-                                          f" {stage_result['score']:.2f}"
-                                          f" {stage_result['angle']:+.1f}°")
+                                          f" {stage_result['score']:.2f}")
+                            # 近邻分支没有"摆角"这个概念，改报关键点数
+                            if stage_result.get("method") == "nn":
+                                stage_text += f" kp{stage_result.get('kp', 0)}"
+                            else:
+                                stage_text += f" {stage_result['angle']:+.1f}°"
                         draw_stage(view, (rx, ry, rx + rw, ry + rh), stage_text,
                                    font=label_font, top_margin=status_height)
 
@@ -532,7 +628,8 @@ def main():
                     else:
                         status += (f" | stage {stage_result['label']}"
                                    f" {stage_result['score']:.2f}"
-                                   f" {stage_result['angle']:+.1f}deg"
+                                   f" {stage_result.get('method', '')}"
+                                   f" kp{stage_result.get('kp', 0)}"
                                    f" {stage_cost:.0f}ms")
             # 状态栏就地画在 view 上并盖掉刚才的占位黑条；
             # draw_overlay 返回的是高度（int），图像仍是 view 本身
@@ -543,6 +640,13 @@ def main():
                 # 工位状态提示固定在整个屏幕的右上角（状态栏正下方）
                 draw_machine_state(view, tracker_zones.machine_state(), font=label_font,
                                    top=status_height)
+                if assembled_step > 0:
+                    # 装配进度固定在整个画面右上角、状态提示下面一行
+                    step_text = f"装配到第 {assembled_step} 步"
+                    patch_h = _measure_label(step_text, label_font)[1]
+                    draw_text_box(view, step_text, view.shape[1] - 10,
+                                  status_height + patch_h * 2 + 18,
+                                  (0, 220, 0), font=label_font, right=True)
 
             # ---- 数据采集：数字键或按钮点击 ----
             # 默认存**干净帧**（没有区域框/零件框/状态栏/按钮），这样误识别的框不会被
@@ -583,9 +687,13 @@ def main():
                         if stage_result is None:
                             print("阶段识别：这一帧没认出来（装配区框未锁定或裁剪非法）")
                         else:
+                            pretty = (f"近邻 距离 {stage_result.get('dist', 0.0):.3f}"
+                                      if stage_result.get("method") == "nn"
+                                      else f"内点 {stage_result.get('inliers', 0)}")
                             print(f"阶段识别：{stage_result['label']}"
-                                  f"（相似度 {stage_result['score']:.3f}，"
-                                  f"摆角 {stage_result['angle']:+.1f}°，"
+                                  f"（{stage_result.get('method', '?')} 相似度"
+                                  f" {stage_result['score']:.3f}，{pretty}，"
+                                  f"关键点 {stage_result.get('kp', 0)}，"
                                   f"耗时 {stage_cost:.0f} ms）")
                     if tracker_parts is not None and not tracker_parts.enabled:
                         print(f"零件跟踪未启用：{tracker_parts.error}")

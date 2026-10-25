@@ -35,12 +35,15 @@ class PartTracker:
                  kf_acc=DEFAULT_KF_ACC, kf_meas=DEFAULT_KF_MEAS,
                  server_url=DEFAULT_SERVER_URL, server_token="",
                  jpeg_quality=DEFAULT_JPEG_QUALITY, server_timeout=DEFAULT_SERVER_TIMEOUT,
-                 wire=DEFAULT_WIRE, window=6):
+                 wire=DEFAULT_WIRE, window=6, track=True, exclude_rect=None):
         self.runner = YoloRunner(weights, backend=backend, imgsz=imgsz, conf=conf,
                                  iou=iou, device=device, server_url=server_url,
                                  server_token=server_token, jpeg_quality=jpeg_quality,
                                  server_timeout=server_timeout, wire_format=wire,
                                  window=window)
+        self.track = bool(track)          # False=完全不做跟踪
+        self.exclude_rect = exclude_rect  # 这个矩形（装配区）里的零件不跟踪
+        self._raw: list = []             # 框内零件的原始检测（不跟踪）
         self.trail_len = max(int(trail_len), 2)
         self.track_max_age = max(int(track_max_age), 1)
         self.kf_acc = float(kf_acc)
@@ -114,6 +117,36 @@ class PartTracker:
         detections = [((x1 * inverse + dx, y1 * inverse + dy,
                         x2 * inverse + dx, y2 * inverse + dy), cls, conf)
                       for x1, y1, x2, y2, cls, conf in raw]
+
+        if not self.track:                     # 完全关闭跟踪：只记录这一轮原始检测
+            self._raw = [{"box": (int(b[0]), int(b[1]), int(b[2]), int(b[3])),
+                          "name": self.names.get(int(cls), f"cls{int(cls)}"),
+                          "conf": float(conf), "track_id": -1,
+                          "trail": None, "predicted": False}
+                         for b, cls, conf in detections]
+            return
+
+        # 落在"装配区"框里的零件不跟踪：它们已经放进去了，是静态的，
+        # 跟踪只会白白产生轨迹和预测框（还会和框外的零件抢 track_id）。
+        inside = []
+        if self.exclude_rect is not None:
+            ex1, ey1, ex2, ey2 = self.exclude_rect
+            outside = []
+            for item in detections:
+                box = item[0]
+                cx, cy = (box[0] + box[2]) / 2.0, (box[1] + box[3]) / 2.0
+                if ex1 <= cx <= ex2 and ey1 <= cy <= ey2:
+                    inside.append(item)
+                else:
+                    outside.append(item)
+            detections = outside
+            self._raw = [{"box": (int(b[0]), int(b[1]), int(b[2]), int(b[3])),
+                          "name": self.names.get(int(cls), f"cls{int(cls)}"),
+                          "conf": float(conf), "track_id": -1,
+                          "trail": None, "predicted": False}
+                         for b, cls, conf in inside]
+        else:
+            self._raw = []
 
         # 1) 所有轨迹先外推到"现在"，拿到预测中心
         predicted: dict[int, tuple] = {}
@@ -193,6 +226,15 @@ class PartTracker:
 
     # ------------------------------------------------------------ 每帧输出
     def tick(self) -> list[dict]:
+        if not self.track:                     # 不做预测，框只在有检测时更新
+            return [dict(item) for item in self._raw]
+
+        if self.exclude_rect is not None:      # 框内零件：直接附在结果末尾（不跟踪）
+            tracked = self._tick_tracked()
+            return tracked + [dict(item) for item in self._raw]
+        return self._tick_tracked()
+
+    def _tick_tracked(self) -> list[dict]:
         """每一帧都调用：把轨迹推进到当前时刻，返回可以立刻绘制的列表。
 
         中间帧没有检测，就靠卡尔曼外推补框；**丢检的轨迹会一边外推一边把速度衰减掉**，
