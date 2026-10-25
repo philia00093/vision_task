@@ -121,8 +121,16 @@ DEFAULT_KF_SIZE_ALPHA = 0.35     # 尺寸平滑系数（尺寸不进状态，只
 
 DEFAULT_KF_ASSOC = 0.6           # 关联距离上限 = 框短边 × 该系数
 
+# 中文字体：Windows 和树莓派（Debian）常见的几个位置都找一遍。
+# 树莓派上 `sudo apt install fonts-wqy-zenhei` 就有第一个；
+# 一个都没有时 drawing.draw_text_box 会退回 cv2 英文标签，不会静默不画。
 CJK_FONTS = ("C:/Windows/Fonts/msyh.ttc", "C:/Windows/Fonts/simhei.ttf",
-             "C:/Windows/Fonts/simsun.ttc", "C:/Windows/Fonts/Deng.ttf")
+             "C:/Windows/Fonts/simsun.ttc", "C:/Windows/Fonts/Deng.ttf",
+             "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+             "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+             "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+             "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+             "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf")
 
 LABEL_FONT_SIZE = 14             # 框上标签字号（原来 22 太大，会盖住零件；--label-size 可调）
 

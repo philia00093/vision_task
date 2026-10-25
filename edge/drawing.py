@@ -41,6 +41,21 @@ _CJK_FONT_CACHE = {}
 
 _LABEL_CACHE = {}
 
+def _draw_ascii_label(image, text, x, y, color, pad=4, right=False):
+    """没中文字体时的兜底：cv2.putText 画 ASCII 标签（中文变 "?"）。"""
+    ascii_text = text.encode("ascii", "replace").decode("ascii").replace("?", "?")
+    scale, thick = 0.45, 1
+    (tw, th), base = cv2.getTextSize(ascii_text, cv2.FONT_HERSHEY_SIMPLEX, scale, thick)
+    x1 = int(x - tw - pad if right else x)
+    y0 = int(y)
+    cv2.rectangle(image, (x1, max(y0 - th - pad, 0)),
+                  (x1 + tw + pad * 2, min(y0 + base + pad, image.shape[0] - 1)),
+                  tuple(int(c) for c in color), -1)
+    cv2.putText(image, ascii_text, (x1 + pad, y0 + 1), cv2.FONT_HERSHEY_SIMPLEX,
+                scale, (0, 0, 0), thick, cv2.LINE_AA)
+    return image
+
+
 def draw_text_box(image, text, x, y, color, font=None, pad=4, right=False):
     """在 (x, y) 画一个底色实心、文字为黑的中文标签块。
 
@@ -52,8 +67,12 @@ def draw_text_box(image, text, x, y, color, font=None, pad=4, right=False):
     if font is None and "font" not in _CJK_FONT_CACHE:
         font = load_cjk_font()
         _CJK_FONT_CACHE["font"] = font
-    if font is None or not text:
+    if not text:
         return image
+    if font is None:
+        # 没有中文字体（树莓派上常见）：用 cv2 画英文兜底，别让标签整块消失。
+        # 中文渲染不出来就打成 "?"，至少位置/数值还在。
+        return _draw_ascii_label(image, text, x, y, color, pad, right)
 
     key = (text, tuple(int(c) for c in color), font.size)
     cached = _LABEL_CACHE.get(key)

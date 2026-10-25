@@ -23,6 +23,7 @@ from edge.grabber import FrameGrabber
 from edge.imaging import contours_to_boxes, prepare_detect_input, save_image, take_right
 from edge.parts import PartTracker
 from edge.stage_match import CascadeStageMatcher, SiftStageMatcher, StageMatcher
+from edge.stage_worker import StageWorker
 from edge.project import ROOT, ensure_dir
 from edge.zone_tracker import ZoneTracker, load_zones, parse_zones
 from edge.zones import zone_mask
@@ -205,6 +206,7 @@ def main():
 
         # ---- 阶段识别：基础视觉（旋转遍历 + 模板匹配），只吃装配区裁剪图 ----
         # 和上面零件跟踪并列共存：一个管"每件零件在哪"，一个管"装到第几步"，互不等待。
+        stage_worker = None          # 后台识别线程（stage 没启用就是 None）
         if args.no_stage:
             print("阶段识别：已用 --no-stage 关闭")
         else:
@@ -242,6 +244,10 @@ def main():
                 if args.stage_region is None:
                     print("         区域锁定前不输出阶段（没有装配区框就不知道裁哪）"
                           "；也可用 --stage-region 固定窗口")
+                # 识别放后台线程：主循环到点丢一帧就走，不等那 130ms
+                stage_worker = StageWorker(stage)
+                print(f"         匹配在后台线程跑（主循环不被卡）；"
+                      f"识别异常会打在状态栏 stage error 上")
 
     save_dir = Path(args.save_dir).expanduser()
     if not save_dir.is_absolute():
@@ -449,6 +455,10 @@ def main():
             # 「连续 1 秒识别」：窗口内的判定要**多数一致**才采纳，单帧抖一下不会翻牌。
             if detect and stage is not None:
                 now_stage = time.time()
+                # 后台线程算完的结果先收进来（不阻塞主循环）
+                for _stamp, _fresh in stage_worker.drain():
+                    stage_history.append((_stamp, _fresh))
+                    stage_cost = _fresh.get("cost_ms", stage_cost)
                 if now_stage - stage_last_ts >= max(args.stage_period, 0.05):
                     stage_last_ts = now_stage
                     region = (tuple(args.stage_region) if args.stage_region
@@ -463,26 +473,24 @@ def main():
                             region_c = (region[0] - cx, region[1] - cy, region[2], region[3])
                         else:
                             src, region_c = view, region
-                        started = time.time()
-                        fresh = stage.match(src, region=region_c)
-                        stage_cost = (time.time() - started) * 1000.0
-                        if fresh is not None:
-                            stage_history.append((now_stage, fresh))
-                        # 窗口内多数表决：票数不够就沿用上一次结论（不翻牌）
-                        committed = commit_stage(stage_history, args.stage_window, now_stage)
-                        if committed is not None:
-                            if committed.get("label") != (stage_result or {}).get("label"):
-                                extra = (f"距离 {committed.get('dist', 0.0):.3f}"
-                                         if committed.get("method") == "nn"
-                                         else f"内点 {committed.get('inliers', 0)}")
-                                print(f"[阶段] {(stage_result or {}).get('label', '-')} → "
-                                      f"{committed.get('label')}"
-                                      f"（{committed.get('method')} 相似度"
-                                      f" {committed.get('score', 0.0):.3f}，{extra}，"
-                                      f"票 {committed.get('votes', '?')}，"
-                                      f"关键点 {committed.get('kp', 0)}，"
-                                      f"{stage_cost:.0f}ms）", flush=True)
-                            stage_result = committed
+                        # 只丢帧、不等结果：识别在后台线程里跑（cv2 计算时会放开 GIL）
+                        stage_worker.submit(src.copy(), region_c, now_stage)
+                # 窗口内多数表决：票数不够就沿用上一次结论（不翻牌）
+                committed = (commit_stage(stage_history, args.stage_window, now_stage)
+                             if stage_history else None)
+                if committed is not None:
+                    if committed.get("label") != (stage_result or {}).get("label"):
+                        extra = (f"距离 {committed.get('dist', 0.0):.3f}"
+                                 if committed.get("method") == "nn"
+                                 else f"内点 {committed.get('inliers', 0)}")
+                        print(f"[阶段] {(stage_result or {}).get('label', '-')} → "
+                              f"{committed.get('label')}"
+                              f"（{committed.get('method')} 相似度"
+                              f" {committed.get('score', 0.0):.3f}，{extra}，"
+                              f"票 {committed.get('votes', '?')}，"
+                              f"关键点 {committed.get('kp', 0)}，"
+                              f"{stage_cost:.0f}ms）", flush=True)
+                    stage_result = committed
 
             # ---- 手遮住物料区 = 这一次装配完成，锁定当前阶段 ----
             if detect and tracker_parts is not None:
@@ -601,6 +609,17 @@ def main():
                 # 状态栏是 cv2.putText 画的，画不了中文（会变成 ??????），所以用英文。
                 # L/R 后面两个数是"暗色可见比 / 亮占比增量"；pred=预测框数量，
                 # yolo=上次推理耗时（Pi 上调 --yolo-interval / --yolo-imgsz 就看这个数）
+                # 阶段放在最前面：状态栏一行放不下时，后面被裁掉的只会是
+                # L/R 这些调试量，阶段这个"当前装到第几步"必须始终看得见。
+                if stage is not None:
+                    if stage_result is None:
+                        status += " | st -"
+                    else:
+                        status += (f" | st {stage_result['label'].replace('step', '')}"
+                                   f" {stage_result['score']:.2f}"
+                                   f" {stage_result.get('method', '')[:1]}"
+                                   f"kp{stage_result.get('kp', 0)}"
+                                   f" {stage_cost:.0f}ms")
                 status += (f" | trays {len(tracker_zones.drawable())}"
                            f" | parts {len(detections)}")
                 if tracker_parts is not None and tracker_parts.enabled:
@@ -621,16 +640,6 @@ def main():
                     left, right = tracker_zones.zones
                     status += (f" | L{left['visible_ratio']:.2f}/{left['cover_delta']:.2f}"
                                f" R{right['visible_ratio']:.2f}/{right['cover_delta']:.2f}")
-                if stage is not None:
-                    # 状态栏是 cv2.putText 画的，只能用英文；度数写 deg（° 画不出来）
-                    if stage_result is None:
-                        status += " | stage -"
-                    else:
-                        status += (f" | stage {stage_result['label']}"
-                                   f" {stage_result['score']:.2f}"
-                                   f" {stage_result.get('method', '')}"
-                                   f" kp{stage_result.get('kp', 0)}"
-                                   f" {stage_cost:.0f}ms")
             # 状态栏就地画在 view 上并盖掉刚才的占位黑条；
             # draw_overlay 返回的是高度（int），图像仍是 view 本身
             draw_overlay(view, status)
