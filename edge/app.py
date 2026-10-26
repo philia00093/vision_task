@@ -637,7 +637,17 @@ def main():
                     for det in detections:
                         if det["trail"]:
                             draw_trail(view, det["trail"], TRAIL_COLOR, thickness=1)
+                # 装配区里的零件**完全不画**：不跟踪、也不显示静态框和标签。
+                # （框还能用于阶段计数，只是不上屏）
+                assembly_rect = (tuple(args.stage_region) if args.stage_region
+                                 else tracker_zones.region("装配区"))
                 for det in detections:
+                    if assembly_rect is not None:
+                        bx1, by1, bx2, by2 = det["box"]
+                        cx_, cy_ = (bx1 + bx2) * 0.5, (by1 + by2) * 0.5
+                        ax, ay, aw, ah = assembly_rect
+                        if ax <= cx_ <= ax + aw and ay <= cy_ <= ay + ah:
+                            continue
                     draw_detection(view, det["box"],
                                    f"{det['name']} {det['conf']:.2f}", PART_COLOR,
                                    font=label_font, thickness=args.line_width,
