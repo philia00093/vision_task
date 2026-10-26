@@ -23,6 +23,7 @@ from edge.grabber import FrameGrabber
 from edge.imaging import contours_to_boxes, prepare_detect_input, save_image, take_right
 from edge.parts import PartTracker
 from edge.stage_match import CascadeStageMatcher, SiftStageMatcher, StageMatcher
+from edge.stage_parts import UNKNOWN, stage_from_parts
 from edge.stage_worker import StageWorker
 from edge.project import ROOT, ensure_dir
 from edge.zone_tracker import ZoneTracker, load_zones, parse_zones
@@ -477,7 +478,20 @@ def main():
                     stage_last_ts = now_stage
                     region = (tuple(args.stage_region) if args.stage_region
                               else tracker_zones.region("装配区"))
-                    if region is not None:
+                    # 先用零件类别走规则（2/3 步能直接定，还省掉 130ms 图像匹配）；
+                    # 规则说"0/1 分不出"（返回 None）时才落到图像分支。
+                    rule_stage, rule_reason, rule_score = (UNKNOWN, "", 0.0)
+                    if tracker_parts is not None and region is not None:
+                        rule_stage, rule_reason, rule_score = stage_from_parts(
+                            detections, tracker_parts.names, region,
+                            tracker_zones.region("物料区"))
+                    if rule_stage is not None:
+                        stage_history.append((now_stage, {
+                            "label": rule_stage, "raw_label": rule_stage,
+                            "score": rule_score, "angle": 0.0, "method": "parts",
+                            "kp": 0, "note": rule_reason}))
+                        stage_cost = 0.0
+                    elif region is not None:
                         # 参考图是 /save 存下来的"上传裁剪图"（900x500），
                         # 所以现场也要用同一块做匹配，否则坐标系对不上。
                         crop = args.upload_crop
@@ -494,9 +508,13 @@ def main():
                              if stage_history else None)
                 if committed is not None:
                     if committed.get("label") != (stage_result or {}).get("label"):
-                        extra = (f"距离 {committed.get('dist', 0.0):.3f}"
-                                 if committed.get("method") == "nn"
-                                 else f"内点 {committed.get('inliers', 0)}")
+                        method = committed.get("method")
+                        if method == "nn":
+                            extra = f"距离 {committed.get('dist', 0.0):.3f}"
+                        elif method == "parts":
+                            extra = committed.get("note", "")
+                        else:
+                            extra = f"内点 {committed.get('inliers', 0)}"
                         print(f"[阶段] {(stage_result or {}).get('label', '-')} → "
                               f"{committed.get('label')}"
                               f"（{committed.get('method')} 相似度"
