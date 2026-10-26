@@ -155,6 +155,8 @@ DETECT_ARGUMENTS = (
     (("--stage-label-size",), dict(type=int, default=STAGE_FONT_SIZE,
                                    help="「阶段」标签在画面上的字号（默认比普通标签大一号）")),
     (("--no-part-check",), dict(action="store_true", help="关掉零件面积缺陷检查")),
+    (("--part-pad",), dict(type=float, default=0.12,
+                           help="量面积时检测框外扩比例（零件要完整落在裁剪图里）")),
     (("--part-tol",), dict(type=float, default=0.04,
                            help="面积容差：相对基准超过这个比例判不合格（默认 4%%）")),
     (("--part-window",), dict(type=int, default=9,

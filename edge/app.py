@@ -477,7 +477,9 @@ def main():
                         box_crop = ((bx1 - ox) / last_scale, (by1 - oy) / last_scale,
                                     (bx2 - ox) / last_scale, (by2 - oy) / last_scale)
                         was_ok = area_check.ok
-                        area_check.push(edge_area(last_source, box_crop))
+                        # 加 12% 外扩：零件必须**完整**落在裁剪图里，面积才不受框抖动影响
+                        # （实测框抖 ±3px，不留余量时面积差 7%，留余量后只差 0.5%）
+                        area_check.push(edge_area(last_source, box_crop, pad=args.part_pad))
                         if (area_check.calibrated and area_check.ok != was_ok
                                 and area_check.judged > 0):
                             tag = "合格" if area_check.ok else "不合格"
