@@ -15,6 +15,7 @@ from edge.args import build_parser
 from edge.camera import fourcc_str, open_camera, probe_modes
 from edge.capture import CaptureDeck, on_mouse
 from edge.constants import CAPTURE_SPECS, DEFAULT_TRAY_MIN_FILL, DEFAULT_YOLO_WEIGHTS, DEFAULT_ZONES_FILE, GREEN_MIN_FILL_RATIO, HAND_COLOR, IMAGE_SUFFIXES, PART_COLOR, TRAIL_COLOR, WINDOW, ZONE_COLORS
+from edge.defects import AreaChecker, edge_area
 from edge.drawing import (_measure_label, draw_detection, draw_machine_state,
                           draw_overlay, draw_stage, draw_trail, draw_zone,
                           draw_text_box, load_cjk_font)
@@ -212,6 +213,7 @@ def main():
         # 和上面零件跟踪并列共存：一个管"每件零件在哪"，一个管"装到第几步"，互不等待。
         stage_worker = None          # 后台识别线程（stage 没启用就是 None）
         part_counter = None          # 数零件定阶段（4 类零件少几个 = 第几步）
+        area_check = None            # 零件面积检查（缺陷识别 1）
         if args.no_stage:
             print("阶段识别：已用 --no-stage 关闭")
         else:
@@ -257,6 +259,12 @@ def main():
                 if tracker_parts is not None:
                     part_counter = PartCounter(tracker_parts.names.values(),
                                                memory=args.part_memory)
+                    if not args.no_part_check:
+                        # 缺陷识别 1：compass 的面积（偏导求轮廓）跟基准比，超 4% 判 NG
+                        area_check = AreaChecker("compass", tol=args.part_tol,
+                                                 window=args.part_window,
+                                                 calib=args.part_calib,
+                                                 ref=args.part_area_ref)
                 print(f"         匹配在后台线程跑（主循环不被卡）；"
                       f"识别异常会打在状态栏 stage error 上")
 
@@ -321,6 +329,8 @@ def main():
     stage_result = None              # 阶段识别结果；间隔之间沿用上一次（标签不闪）
     stage_cost = 0.0                 # 上一次阶段识别的耗时（ms，Pi 上调参数看这个数）
     last_infer_ts = 0.0              # 上一次提交推理的时间（--infer-fps 用）
+    last_source = None               # 最近一次提交给模型的裁剪图（面积检查在它上面量）
+    last_scale, last_offset = 1.0, (0.0, 0.0)
     stage_history = deque()          # 最近 --stage-window 秒的判定：(ts, 结果)
     stage_last_ts = 0.0              # 上一次跑阶段识别的时间（0 = 立刻跑第一次）
 
@@ -443,6 +453,7 @@ def main():
                     else:
                         source, offset = view, (0.0, 0.0)
                     detect_input, detect_scale = prepare_detect_input(source, args.detect_width)
+                    last_source, last_scale, last_offset = source, detect_scale, offset
                     tracker_parts.detect(detect_input, detect_scale, offset,
                                          view_size=(view.shape[1], view.shape[0]))
                     submitted_now = True
@@ -455,6 +466,24 @@ def main():
                             tracker_parts.detect(detect_input, detect_scale, offset,
                                                  view_size=(view.shape[1], view.shape[0]))
                 detections = tracker_parts.tick()      # 每帧都跑：预测补框，显示才连贯
+                # ---- 缺陷识别 1：compass 面积（偏导 → 轮廓 → 面积 → 和基准比）----
+                if area_check is not None and submitted_now and last_source is not None:
+                    target = next((d for d in detections if d["name"] == "compass"), None)
+                    if target is not None:
+                        # 框是 view 坐标，先换回"模型看到的那张裁剪图"的坐标再量：
+                        # 同一分辨率下量出来的面积才稳（全分辨率 view 上互换两个峰，CV 2%）
+                        ox, oy = last_offset
+                        bx1, by1, bx2, by2 = target["box"]
+                        box_crop = ((bx1 - ox) / last_scale, (by1 - oy) / last_scale,
+                                    (bx2 - ox) / last_scale, (by2 - oy) / last_scale)
+                        was_ok = area_check.ok
+                        area_check.push(edge_area(last_source, box_crop))
+                        if (area_check.calibrated and area_check.ok != was_ok
+                                and area_check.judged > 0):
+                            tag = "合格" if area_check.ok else "不合格"
+                            print(f"[缺陷] compass 面积 {area_check.area:.0f}"
+                                  f"（基准 {area_check.ref:.0f}，"
+                                  f"误差 {area_check.ratio*100:+.1f}%）→ {tag}", flush=True)
                 # 每一帧都入队（包括因为窗口满被背压丢掉、没发给电脑的那些）。
                 # 之前只存"发出去的帧"，链路一旦掉速，队列就被抽干 → 水位不足 → 画面卡住。
                 if sync_display:
@@ -586,6 +615,14 @@ def main():
                                    f"{det['name']} {det['conf']:.2f}", PART_COLOR,
                                    font=label_font, thickness=args.line_width,
                                    top_margin=status_height)
+                # 面积判定单独一行贴在 compass 框下沿：「A17646 +0.3% 合格」/ 红色「不合格」
+                if area_check is not None and area_check.judged > 0:
+                    target = next((d for d in detections if d["name"] == "compass"), None)
+                    if target is not None:
+                        bx1, by1, bx2, by2 = target["box"]
+                        draw_text_box(view, area_check.label(), bx1, by2 + 26,
+                                      (0, 200, 0) if area_check.ok else (0, 0, 255),
+                                      font=label_font)
 
                 # 阶段标签贴「装配区」框的右上角（左上角是区域名），和零件框互不遮挡
                 if stage is not None:
@@ -601,8 +638,11 @@ def main():
                             stage_text = (f"阶段 {stage_result['label']}"
                                           f" {stage_result['score']:.2f}")
                             # 近邻分支没有"摆角"这个概念，改报关键点数
-                            if stage_result.get("method") == "nn":
+                            method = stage_result.get("method")
+                            if method == "nn":
                                 stage_text += f" kp{stage_result.get('kp', 0)}"
+                            elif method == "parts":
+                                stage_text += ""          # 数零件的结论，没有"摆角"这回事
                             else:
                                 stage_text += f" {stage_result['angle']:+.1f}°"
                         draw_stage(view, (rx, ry, rx + rw, ry + rh), stage_text,
@@ -651,6 +691,10 @@ def main():
                 # yolo=上次推理耗时（Pi 上调 --yolo-interval / --yolo-imgsz 就看这个数）
                 # 阶段放在最前面：状态栏一行放不下时，后面被裁掉的只会是
                 # L/R 这些调试量，阶段这个"当前装到第几步"必须始终看得见。
+                if area_check is not None and area_check.calibrated:
+                    status += (f" | cmp {area_check.area:.0f}"
+                               f" {area_check.ratio*100:+.1f}%"
+                               f" {'OK' if area_check.ok else 'NG'}")
                 if stage is not None:
                     if stage_result is None:
                         status += " | st -"
