@@ -636,7 +636,8 @@ def main():
                 if not args.no_trail:
                     for det in detections:
                         if det["trail"]:
-                            draw_trail(view, det["trail"], TRAIL_COLOR, thickness=1)
+                            draw_trail(view, det["trail"], TRAIL_COLOR,
+                                       thickness=args.trail_width)
                 # 装配区里的零件**完全不画**：不跟踪、也不显示静态框和标签。
                 # （框还能用于阶段计数，只是不上屏）
                 assembly_rect = (tuple(args.stage_region) if args.stage_region

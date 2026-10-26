@@ -121,6 +121,8 @@ DETECT_ARGUMENTS = (
     (("--yolo-imgsz",), dict(type=int, default=DEFAULT_YOLO_IMGSZ,
                              help="模型输入尺寸（训练用的 960；降 640 换帧率）")),
     (("--yolo-device",), dict(default="0", help="推理设备：0=第一块 GPU，cpu=CPU，空=自动")),
+    (("--trail-width",), dict(type=int, default=4,
+                              help="零件轨迹线粗细（像素，默认 4；原来固定 1 太细）")),
     (("--trail-len",), dict(type=int, default=DEFAULT_TRAIL_LEN,
                             help="轨迹保留的点数（越多尾巴越长）")),
     (("--track-max-age",), dict(type=int, default=DEFAULT_TRACK_MAX_AGE,
