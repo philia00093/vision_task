@@ -468,7 +468,20 @@ def main():
                                                  view_size=(view.shape[1], view.shape[0]))
                 detections = tracker_parts.tick()      # 每帧都跑：预测补框，显示才连贯
                 # ---- 缺陷识别 1：compass 面积（偏导 → 轮廓 → 面积 → 和基准比）----
-                if area_check is not None and submitted_now and last_source is not None:
+                # 阶段到 step0 就说明**已经开始装配**了：来料完整性检测到此为止，
+                # 不再量面积、也不在屏上显示判定（零件已经装进去了，再判没意义）
+                assembly_started = bool(
+                    stage_result is not None
+                    and str(stage_result.get("label", "")).startswith("step"))
+                # 手在画面里 = 正在拿/放：手会挡住零件，量出来必然偏小（实测 -9.7% 误判），
+                # 所以有手就整帧跳过，不量也不显示。
+                hand_present = bool(tracker_parts is not None
+                                    and tracker_parts.runner.remote is not None
+                                    and tracker_parts.runner.remote.hand)
+                if hand_present or assembly_started:
+                    area_visible = False
+                if (area_check is not None and submitted_now and last_source is not None
+                        and not assembly_started and not hand_present):
                     target = next((d for d in detections if d["name"] == "compass"), None)
                     if target is not None:
                         # 框是 view 坐标，先换回"模型看到的那张裁剪图"的坐标再量：

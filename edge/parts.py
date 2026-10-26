@@ -141,6 +141,13 @@ class PartTracker:
                 else:
                     outside.append(item)
             detections = outside
+            # ---- 关键：走进装配区的零件，它的**已有轨迹要立刻删掉** ----
+            # 只把"框内检测"挡在外面是不够的：零件进装配区之前就已经在建轨迹，
+            # 进框之后没有检测去喂它，卡尔曼会一直外推、继续画框和轨迹，
+            # 看起来就是"装配区里还在跟踪"。
+            # 做法：拿**框内的检测**去把附近的旧轨迹摘掉（按中心距离配对，
+            # 因为进框前它的速度可能已经归零，靠预测位置是追不上的）。
+            self._inside_rect = (ex1, ey1, ex2, ey2)
             self._raw = [{"box": (int(b[0]), int(b[1]), int(b[2]), int(b[3])),
                           "name": self.names.get(int(cls), f"cls{int(cls)}"),
                           "conf": float(conf), "track_id": -1,
@@ -155,6 +162,32 @@ class PartTracker:
             track.width, track.height = self.frame_size
             predicted[track_id] = track.predict(
                 now, damp_velocity=track.miss >= DEFAULT_KF_LOST_AFTER)
+
+        # ---- 预测位置已经进装配区的轨迹，立刻删掉 ----
+        # 零件被手放进装配区时，它的轨迹会跟着预测往那边走；一旦预测点落进框里，
+        # 就说明它"进去了"，此后不该再有框和轨迹。用预测点判（而不是旧框位置），
+        # 才能跟上"正在被放进去"的那一两帧。
+        rect = self.exclude_rect
+        if rect is not None:
+            kx1, ky1, kx2, ky2 = rect
+            dead = set()
+            for track_id, (px, py) in predicted.items():
+                if kx1 <= px <= kx2 and ky1 <= py <= ky2:
+                    dead.add(track_id)                 # 预测点已经进框
+            # 刚出现在框里的检测，也把附近那条旧轨迹带走：零件是被手拿进去的，
+            # 轨迹最后一次更新还在框外，速度也衰减了，光靠预测追不进框。
+            for item in inside:
+                ib = item[0]
+                icx, icy = (ib[0] + ib[2]) / 2.0, (ib[1] + ib[3]) / 2.0
+                size = max(ib[2] - ib[0], ib[3] - ib[1])
+                limit2 = max(size * 3.0, 150.0) ** 2
+                for track_id, (px, py) in predicted.items():
+                    if (px - icx) ** 2 + (py - icy) ** 2 <= limit2:
+                        dead.add(track_id)
+            for track_id in dead:
+                predicted.pop(track_id, None)
+                self.tracks.pop(track_id, None)
+                self.trails.pop(track_id, None)
 
         # 2) 按"检测中心 ↔ 预测中心"的距离从小到大贪心配对
         pairs: list[tuple] = []
