@@ -292,6 +292,18 @@ class RemoteRunner:
                 except Exception:
                     pass
                 connection = None
+                # ---- 关键：把窗口位置还回去 ----
+                # sent 在 submit() 入队时就 +1，只有收到回包（acked）才让窗口前进。
+                # 请求失败时这一帧永远不会回包，如果不在这里退掉，窗口会被"永远在飞"
+                # 的帧占满：sent - acked 恒等于 window → submit() 全部丢弃 →
+                # 服务端重启一次，客户端就永久卡死（实测：在飞 16/16、之后一帧不发）。
+                with self._cond:
+                    self.sent = max(self.acked, self.sent - 1)
+                    stale = len(self._ring)          # 断线期间攒下的帧已经过期，别补发
+                    if stale:
+                        self._ring.clear()
+                        self.dropped += stale
+                        self.sent = max(self.acked, self.sent - stale)
                 time.sleep(0.05)
         try:
             if connection is not None:
