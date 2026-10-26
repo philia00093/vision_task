@@ -98,6 +98,7 @@ class RemoteRunner:
         self._stop = threading.Event()
         self._workers: list[threading.Thread] = []
         self._started = False
+        self._last_start_try = 0.0
 
     # ------------------------------------------------------------ 握手 / 启动
     def start(self) -> bool:
@@ -123,7 +124,25 @@ class RemoteRunner:
 
     @property
     def ready(self) -> bool:
-        return self._started and not self.error
+        """能不能干活 = 发送线程开起来了，**不看 error**。
+
+        error 是"上一次请求失败了"的瞬时状态。以前这里是 `_started and not error`，
+        于是网络抖一下 → error 置位 → ready 变 False → 上层 PartTracker.detect()
+        直接 return → 再没有请求 → error 永远清不掉 → 系统永久卡死（实测：卡在
+        "收到过帧但之后一帧不发"，屏上还正常刷新，只是永远没有框）。
+        现在 error 只用于显示，连不上就一直在后台重试。
+        """
+        return self._started
+
+    def ensure_started(self) -> bool:
+        """没握手成功就每隔几秒重试一次（服务端起晚了也能自己接上）。"""
+        if self._started:
+            return True
+        now = time.time()
+        if now - self._last_start_try < 2.0:
+            return False
+        self._last_start_try = now
+        return self.start()
 
     def close(self) -> None:
         self._stop.set()
@@ -227,7 +246,7 @@ class RemoteRunner:
 
     def detect(self, frame) -> list[tuple]:
         """提交一帧，立刻返回"最近一次"的结果（不阻塞主循环）。"""
-        if not self._started:
+        if not self._started and not self.ensure_started():
             return []
         self.submit(frame)
         with self._lock:
