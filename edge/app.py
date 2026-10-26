@@ -139,6 +139,8 @@ def main():
     green_hi = tuple(args.green_hi)
     zone_mode = args.zone_mode
     label_font = load_cjk_font(args.label_size) if detect else None
+    # 阶段标签单独大一号：屏上最要紧的就是"装到第几步"，小了根本看不清
+    stage_font = load_cjk_font(args.stage_label_size) if detect else None
     # 区域来源：--zones 手工指定 → zones.json（上次锁定的结果）→ 都没有就自动识别
     zone_file = Path(args.zones_file).expanduser() if args.zones_file else \
         ROOT / DEFAULT_ZONES_FILE
@@ -566,7 +568,7 @@ def main():
                             else:
                                 stage_text += f" {stage_result['angle']:+.1f}°"
                         draw_stage(view, (rx, ry, rx + rw, ry + rh), stage_text,
-                                   font=label_font, top_margin=status_height)
+                                   font=stage_font or label_font, top_margin=status_height)
 
                 # 手部框：帧格式里预留的槽位。电脑端将来接了手部识别，这里自动就画出来；
                 # 现在服务端一般发 valid=0，也就是不画。

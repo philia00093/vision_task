@@ -85,9 +85,14 @@ def draw_text_box(image, text, x, y, color, font=None, pad=4, right=False):
         probe = Image.new("RGB", (8, 8))
         left, top, right, bottom = ImageDraw.Draw(probe).textbbox((0, 0), text, font=font)
         width, height = max(1, right - left), max(1, bottom - top)
+        # 字的颜色按底色亮度自动选：深色底（蓝/红/绿）配白字，浅色底配黑字。
+        # 以前固定黑字，蓝框上缩到 9px 就只剩一团黑块 —— 屏上看着就是"乱码"。
+        bg_b, bg_g, bg_r = (float(c) for c in color[:3])
+        dark_bg = (0.114 * bg_b + 0.587 * bg_g + 0.299 * bg_r) < 140
+        fg = (255, 255, 255) if dark_bg else (0, 0, 0)
         patch = Image.new("RGB", (width + pad * 2, height + pad * 2),
                           (int(color[2]), int(color[1]), int(color[0])))   # BGR → RGB
-        ImageDraw.Draw(patch).text((pad - left, pad - top), text, font=font, fill=(0, 0, 0))
+        ImageDraw.Draw(patch).text((pad - left, pad - top), text, font=font, fill=fg)
         cached = cv2.cvtColor(np.array(patch), cv2.COLOR_RGB2BGR)
         _LABEL_CACHE[key] = cached
 

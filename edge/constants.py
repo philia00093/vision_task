@@ -132,7 +132,8 @@ CJK_FONTS = ("C:/Windows/Fonts/msyh.ttc", "C:/Windows/Fonts/simhei.ttf",
              "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
              "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf")
 
-LABEL_FONT_SIZE = 14             # 框上标签字号（原来 22 太大，会盖住零件；--label-size 可调）
+LABEL_FONT_SIZE = 22             # 框上标签字号（1280x960 缩到 1024x600 屏剩 0.62 倍，22→14px 才读得清）
+STAGE_FONT_SIZE = 30             # 阶段标签单独再大一号：它是屏上最要紧的信息
 
 CAPTURE_SPECS = (
     # 按钮名        文件名前缀   输出目录（相对项目根）                     快捷键
