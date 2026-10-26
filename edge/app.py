@@ -264,7 +264,8 @@ def main():
                         area_check = AreaChecker("compass", tol=args.part_tol,
                                                  window=args.part_window,
                                                  calib=args.part_calib,
-                                                 ref=args.part_area_ref)
+                                                 ref=args.part_area_ref,
+                                                 pos_tol=args.part_pos_tol)
                 print(f"         匹配在后台线程跑（主循环不被卡）；"
                       f"识别异常会打在状态栏 stage error 上")
 
@@ -479,9 +480,18 @@ def main():
                         # 检测框只当"搜索窗"，边框和面积都由偏导找出来的零件轮廓决定
                         # （实测框抖 ±5px，轮廓面积只变 0.46%；直接拿框裁会变 7%）
                         part = find_part(last_source, box_crop, search=args.part_search)
+                        area_visible = False
+                        if part is not None:
+                            # 只在零件摆到"标定位置 ±10%"时才判、才显示；
+                            # 拿在手上/路过画面的那些帧既不量也不显示。
+                            in_pos = area_check.check_position(part["center"],
+                                                               last_source.shape)
+                            if in_pos is False:
+                                part = None
                         if part is not None:
                             was_ok = area_check.ok
                             area_check.push(part["area"])
+                            area_visible = True
                             if (area_check.calibrated and area_check.ok != was_ok
                                     and area_check.judged > 0):
                                 tag = "合格" if area_check.ok else "不合格"
@@ -620,10 +630,10 @@ def main():
                                    font=label_font, thickness=args.line_width,
                                    top_margin=status_height)
                 # 面积判定写在右上角（不画框，不挡零件）
-                if area_check is not None and area_check.judged > 0:
-                    state_h = _measure_label(tracker_zones.machine_state(), label_font)[1]
+                if area_check is not None and area_check.judged > 0 and area_visible:
+                    # 固定占第 1 行（第 0 行是工位状态），行高固定 → 不会重叠
                     draw_area_verdict(view, area_check.label(), ok=area_check.ok,
-                                      font=label_font, top=status_height, below=state_h + 12)
+                                      font=label_font, top=status_height, row=1)
 
                 # 阶段标签贴「装配区」框的右上角（左上角是区域名），和零件框互不遮挡
                 if stage is not None:

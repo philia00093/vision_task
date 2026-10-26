@@ -32,6 +32,7 @@ import numpy as np
 
 DEFAULT_TOL = 0.04          # 容差：4% 以外算不合格
 DEFAULT_SEARCH = 0.35       # 搜索窗在检测框基础上外扩多少（只是"找零件"的范围，不参与测量）
+DEFAULT_POS_TOL = 0.10      # 零件必须落在标定位置的 ±10% 内才算"在位"，才判、才显示
 DEFAULT_WINDOW = 9          # 取最近多少次测量取中位数
 DEFAULT_CALIB = 9           # 开机先量多少帧当基准
 
@@ -88,8 +89,11 @@ class AreaChecker:
 
     def __init__(self, name: str, tol: float = DEFAULT_TOL,
                  window: int = DEFAULT_WINDOW, calib: int = DEFAULT_CALIB,
-                 ref: float | None = None):
+                 ref: float | None = None, pos_tol: float = DEFAULT_POS_TOL):
         self.name = name
+        self.pos_tol = float(pos_tol)
+        self.center = None            # 标定出来的"应该在的位置"
+        self.frame_size = None
         self.tol = float(tol)
         self.window = max(1, int(window))
         self.calib = max(1, int(calib))
@@ -120,6 +124,29 @@ class AreaChecker:
 
     def set_ref(self, ref: float) -> None:
         self.ref = float(ref)
+
+    # ------------------------------------------------------------ 位置门限
+    def check_position(self, center, frame_shape) -> bool | None:
+        """零件在不在"应该在的位置"（±pos_tol）。
+
+        返回 True=在位（可以判、可以显示）、False=不在位（不判也不显示）、
+        None=第一次见到（把当前位置记成基准）。
+        为什么要有这条：零件被拿在手上、路过画面时也会被检出，那时候量面积既不准
+        也没意义；只有摆到标定位置附近，才说明它"放好了"。
+        """
+        if center is None or frame_shape is None:
+            return False
+        height, width = frame_shape[:2]
+        if self.center is None:
+            self.center = (float(center[0]), float(center[1]))
+            self.frame_size = (int(width), int(height))
+            return None
+        dx = abs(float(center[0]) - self.center[0]) / max(width, 1)
+        dy = abs(float(center[1]) - self.center[1]) / max(height, 1)
+        return dx <= self.pos_tol and dy <= self.pos_tol
+
+    def reset_position(self) -> None:
+        self.center = None
 
     # ------------------------------------------------------------ 测量
     def push(self, area: float):

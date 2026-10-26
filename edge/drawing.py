@@ -185,17 +185,25 @@ def draw_stage(image, box, text, color=STAGE_COLOR, font=None, top_margin=0):
     draw_text_box(image, text, x2 - 2, text_y, color, font=font, right=True)
     return image
 
-def draw_area_verdict(image, text, ok=True, font=None, margin=10, top=0, below=0):
-    """把零件面积判定写在**右上角**（工位状态下面一行）。
+def row_y(top: int, row: int, font=None) -> int:
+    """右上角第 row 行的**贴片顶边** y。状态牌子、面积判定都按这个排，行与行不会撞。"""
+    return max(int(top), 0) + int(row) * (label_row_height(font) + 10) + 6
 
-    不放框上：框上那点地方又要贴零件名、又要贴框边，面积这种"结论"写在角落更清楚，
-    也不挡零件本身。
+
+def label_row_height(font=None) -> int:
+    """一行标签的标准高度：用固定字符量，不受内容长短影响（否则状态文字一长就撞）。"""
+    return _measure_label("组件A0", font)[1] if font is not None else 30
+
+
+def draw_area_verdict(image, text, ok=True, font=None, margin=10, top=0, row=1):
+    """把零件面积判定写在右上角第 `row` 行（工位状态占第 0 行）。
+
+    行高统一用 `label_row_height`，不再拿"当前状态文字的高度"去推，
+    这样「装配中/取料中」这类长度不同的文字也不会跟判定块叠在一起。
     """
     if not text:
         return image
-    patch_h = _measure_label(text, font)[1] if font is not None else 30
-    y = max(int(top), 0) + int(below) + patch_h + 10
-    draw_text_box(image, text, image.shape[1] - margin, y,
+    draw_text_box(image, text, image.shape[1] - margin, row_y(top, row, font),
                   (0, 200, 0) if ok else (0, 0, 255), font=font, right=True)
     return image
 
@@ -207,7 +215,7 @@ def draw_machine_state(image, text, font=None, color=STATE_COLOR, margin=10, top
     """
     if not text:
         return image
-    patch_h = _measure_label(text, font)[1] if font is not None else 30
-    y = max(int(top), 0) + patch_h + 10
-    draw_text_box(image, text, image.shape[1] - margin, y, color, font=font, right=True)
+    # 固定占第 0 行；面积判定用第 1 行（draw_area_verdict），两者按同一套行高排
+    draw_text_box(image, text, image.shape[1] - margin, row_y(top, 0, font),
+                  color, font=font, right=True)
     return image

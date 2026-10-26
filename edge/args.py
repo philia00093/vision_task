@@ -158,6 +158,9 @@ DETECT_ARGUMENTS = (
     (("--part-search",), dict(type=float, default=0.35,
                               help="找零件轮廓时的搜索窗外扩比例（检测框只当搜索范围，"
                                    "不参与测量）")),
+    (("--part-pos-tol",), dict(type=float, default=0.10,
+                               help="零件必须落在标定位置的 ±这个比例内才判、才显示"
+                                    "（相对画面宽高，默认 10%%）")),
     (("--part-tol",), dict(type=float, default=0.04,
                            help="面积容差：相对基准超过这个比例判不合格（默认 4%%）")),
     (("--part-window",), dict(type=int, default=9,
