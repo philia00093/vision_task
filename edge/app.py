@@ -25,7 +25,9 @@ from edge.imaging import contours_to_boxes, prepare_detect_input, save_image, ta
 from edge.parts import PartTracker
 from edge.stage_match import CascadeStageMatcher, SiftStageMatcher, StageMatcher
 from edge.stage_parts import UNKNOWN, PartCounter, stage_from_parts
+from edge.screw import NG, OK, RUNNING, ScrewTurns
 from edge.stage_worker import StageWorker
+from edge.touch import TouchReader
 from edge.project import ROOT, ensure_dir
 from edge.zone_tracker import ZoneTracker, load_zones, parse_zones
 from edge.zones import zone_mask
@@ -213,6 +215,9 @@ def main():
         # 和上面零件跟踪并列共存：一个管"每件零件在哪"，一个管"装到第几步"，互不等待。
         stage_worker = None          # 后台识别线程（stage 没启用就是 None）
         part_counter = None          # 数零件定阶段（4 类零件少几个 = 第几步）
+        touch = None                 # 触摸屏（屏幕右下角的按钮用）
+        screw = None                 # 支撑杆拧紧计转
+        screw_rect = None            # 按钮在 view 坐标里的位置
         area_check = None            # 零件面积检查（缺陷识别 1）
         if args.no_stage:
             print("阶段识别：已用 --no-stage 关闭")
@@ -287,7 +292,21 @@ def main():
     # 外接屏（framebuffer）：树莓派 Lite 没装 X，cv2.imshow 不可用，直接把画面写 /dev/fb0
     fb_screen = FbWriter(args.fb, mode=args.fb_mode, rotate=args.fb_rotate) if args.fb else None
     if fb_screen is not None:
-        print(f"          屏幕 {fb_screen.describe()}；Ctrl+C 退出，按键/采集按钮不可用")
+        print(f"          屏幕 {fb_screen.describe()}")
+
+    # ---- 触摸屏 + 支撑杆计转（都在树莓派本地跑，不依赖电脑）----
+    screw = ScrewTurns(min_turns=args.screw_min_turns, target_max=args.screw_max_turns,
+                       stop_seconds=args.screw_stop)
+    if not args.no_touch:
+        scr_w = fb_screen.width if fb_screen is not None else 1024
+        scr_h = fb_screen.height if fb_screen is not None else 600
+        touch = TouchReader(device=args.touch_dev, width=scr_w, height=scr_h)
+        if touch.start():
+            print(f"触摸屏：{args.touch_dev} | 原始 x{touch.raw_x_range} y{touch.raw_y_range}"
+                  f" → 屏幕 {scr_w}x{scr_h}")
+        else:
+            print(f"触摸屏不可用：{touch.error}（按钮照画，但点不了）")
+            touch = None
 
     # 相机取帧放进独立线程：解码 20.8ms 不再阻塞主循环（只对实时相机，视频文件要顺序读）
     grabber = FrameGrabber(cap, timeout=args.server_timeout) if (cap is not None and not is_video) else None
@@ -467,6 +486,38 @@ def main():
                             tracker_parts.detect(detect_input, detect_scale, offset,
                                                  view_size=(view.shape[1], view.shape[0]))
                 detections = tracker_parts.tick()      # 每帧都跑：预测补框，显示才连贯
+                # ---- 触摸按钮 + 支撑杆计转（本机逻辑，不走网络）----
+                if touch is not None and screw is not None:
+                    vh, vw = view.shape[:2]
+                    btn_w, btn_h = 420, 120
+                    bx2, by2 = vw - 30, vh - 30
+                    bx1, by1 = bx2 - btn_w, by2 - btn_h
+                    screw_rect = (bx1, by1, bx2, by2)
+                    if fb_screen is not None:
+                        sc = min(fb_screen.width / vw, fb_screen.height / vh)
+                        ox = (fb_screen.width - int(round(vw * sc))) // 2
+                        oy = (fb_screen.height - int(round(vh * sc))) // 2
+                    else:
+                        sc, ox, oy = 1.0, 0, 0
+                    for tx, ty, pressed in touch.poll():
+                        if not pressed:
+                            continue
+                        vx, vy = (tx - ox) / sc, (ty - oy) / sc
+                        if bx1 <= vx <= bx2 and by1 <= vy <= by2:
+                            screw.start()
+                            print("[螺丝] 开始装配支撑杆：统计圈数，目标 ≥ "
+                                  f"{screw.min_turns:g} 圈", flush=True)
+                if screw is not None and screw.running:
+                    target = next((d for d in detections if d["name"] == "support"), None)
+                    if target is not None:
+                        sx1, sy1, sx2, sy2 = target["box"]
+                        pad = int(max(sx2 - sx1, sy2 - sy1) * 0.15)
+                        roi = view[max(0, int(sy1) - pad):int(sy2) + pad,
+                                   max(0, int(sx1) - pad):int(sx2) + pad]
+                        before = screw.state
+                        screw.update(roi)
+                        if screw.state != before and screw.state in (OK, NG):
+                            print(f"[螺丝] 停手：{screw.describe()}", flush=True)
                 # ---- 缺陷识别 1：compass 面积（偏导 → 轮廓 → 面积 → 和基准比）----
                 # 阶段到 step0 就说明**已经开始装配**了：来料完整性检测到此为止，
                 # 不再量面积、也不在屏上显示判定（零件已经装进去了，再判没意义）
@@ -654,6 +705,28 @@ def main():
                                    font=label_font, thickness=args.line_width,
                                    top_margin=status_height)
                 # 面积判定写在右上角（不画框，不挡零件）
+                # ---- 屏幕右下角：开始装配支撑杆 按钮（触摸屏点它开始计转）----
+                if screw is not None:
+                    vh, vw = view.shape[:2]
+                    btn_w, btn_h = 420, 120
+                    bx2, by2 = vw - 30, vh - 30
+                    bx1, by1 = bx2 - btn_w, by2 - btn_h
+                    color = {"idle": (200, 120, 0), "running": (0, 180, 220),
+                             "ok": (0, 170, 0), "ng": (0, 0, 220)}.get(screw.state,
+                                                                     (200, 120, 0))
+                    cv2.rectangle(view, (bx1, by1), (bx2, by2), color, -1)
+                    cv2.rectangle(view, (bx1, by1), (bx2, by2), (255, 255, 255), 2)
+                    if screw.state == "idle":
+                        btn_text = "开始装配支撑杆"
+                    elif screw.state == "running":
+                        btn_text = f"装配中 {screw.turns:.2f} 圈"
+                    elif screw.state == "ok":
+                        btn_text = f"完成 {screw.turns:.2f} 圈 合格"
+                    else:
+                        btn_text = f"不合格 只转 {screw.turns:.2f} 圈"
+                    draw_text_box(view, btn_text, bx1 + 18, by1 + 18, color,
+                                  font=label_font)
+
                 if area_check is not None and area_check.judged > 0 and area_visible:
                     # 固定占第 1 行（第 0 行是工位状态），行高固定 → 不会重叠
                     draw_area_verdict(view, area_check.label(), ok=area_check.ok,
