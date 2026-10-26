@@ -20,6 +20,7 @@ import time
 import json
 import argparse
 import socket
+from types import SimpleNamespace
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -30,6 +31,7 @@ except ImportError:                                      # 从别处起 Python �
     import protocol as wire
 
 from server.model import DEFAULT_WEIGHTS, LAST, LAST_LOCK, STATE, infer, load_model
+from server.pipeline import InferPipeline
 
 # 保存"干净帧"的目录：存的是树莓派上传的原始 JPEG，**没有任何画框**
 SNAPSHOT_DIR = Path(__file__).resolve().parent.parent / "output" / "snapshots"
@@ -38,6 +40,7 @@ from server.web import PAGE_HTML
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
+    pipeline: "InferPipeline | None" = None       # 推理流水线（main() 里建好挂上来）
     imgsz = 640
     conf = 0.35
     iou = 0.5
@@ -89,7 +92,9 @@ class Handler(BaseHTTPRequestHandler):
                            "step": LAST["step"], "flags": list(LAST["flags"]),
                            "hand": LAST["hand"],
                            "age": (round(time.time() - LAST["time"], 3)
-                                   if LAST["time"] else None)}
+                                   if LAST["time"] else None),
+                           "queue": (Handler.pipeline.stats()
+                                     if Handler.pipeline is not None else None)}
             self._send(payload)
             return
         if path == "/frame.jpg":                          # 最近一次收到的画面
@@ -139,16 +144,32 @@ class Handler(BaseHTTPRequestHandler):
         if image is None:
             self._send({"ok": False, "error": "JPEG 解不开"}, 400)
             return
+        job = self._run_pipeline(image)
+        if job.error:
+            self._send({"ok": False, "error": f"推理失败：{job.error}"}, 500)
+            return
+        self._remember(raw, image, job.boxes, round(job.cost_ms, 2))
+        self._send({"ok": True, "boxes": job.boxes, "ms": round(job.cost_ms, 2),
+                    "dropped": job.dropped, "queue_ms": round(job.wait_ms, 1),
+                    "size": [image.shape[1], image.shape[0]]})
+
+    # ------------------------------------------------------------ 推理流水线
+    def _run_pipeline(self, image):
+        """把解码好的图丢进有界 FIFO，等这一帧的结果（顺序、限流、丢旧帧都在里面）。"""
+        pipeline = Handler.pipeline
+        if pipeline is not None:
+            return pipeline.run(image, imgsz=self.imgsz, conf=self.conf,
+                                iou=self.iou, device=self.device)
+        # 没挂流水线（单帧联调时）：直接推，返回同样结构的对象
+        fallback = SimpleNamespace(boxes=[], cost_ms=0.0, wait_ms=0.0,
+                                   dropped=False, error="")
         start = time.time()
         try:
-            boxes = infer(image, self.imgsz, self.conf, self.iou, self.device)
-        except Exception as error:                        # 推理出错也要给出可读原因
-            self._send({"ok": False, "error": f"推理失败：{error}"}, 500)
-            return
-        cost = round((time.time() - start) * 1000.0, 2)
-        self._remember(raw, image, boxes, cost)
-        self._send({"ok": True, "boxes": boxes, "ms": cost,
-                    "size": [image.shape[1], image.shape[0]]})
+            fallback.boxes = infer(image, self.imgsz, self.conf, self.iou, self.device)
+        except Exception as error:
+            fallback.error = f"{type(error).__name__}: {error}"
+        fallback.cost_ms = (time.time() - start) * 1000.0
+        return fallback
 
     # ------------------------------------------------------------ 二进制分支
     def _handle_binary(self, raw: bytes) -> None:
@@ -162,13 +183,11 @@ class Handler(BaseHTTPRequestHandler):
         if image is None:
             self._send({"ok": False, "error": "帧里的图像解不开"}, 400)
             return
-        start = time.time()
-        try:
-            boxes = infer(image, self.imgsz, self.conf, self.iou, self.device)
-        except Exception as error:
-            self._send({"ok": False, "error": f"推理失败：{error}"}, 500)
+        job = self._run_pipeline(image)
+        if job.error:
+            self._send({"ok": False, "error": f"推理失败：{job.error}"}, 500)
             return
-        cost = (time.time() - start) * 1000.0
+        boxes, cost = job.boxes, job.cost_ms
         self._remember(image_info["jpeg"], image, boxes, round(cost, 2))
         # 下行帧里电脑端说了算的三个字段（现在默认 0/全0/无，可用 POST /stage 临时改）
         step, flags, hand = STATE["step"], STATE["flags"], STATE["hand"]
@@ -333,6 +352,12 @@ def main() -> int:
     parser.add_argument("--token", default="", help="简单口令：客户端要带同样的 X-Token")
     parser.add_argument("--window", type=int, default=6,
                         help="滑动窗口：允许树莓派同时在飞的帧数（默认 6）")
+    parser.add_argument("--workers", type=int, default=1,
+                        help="推理 worker 数（GPU 上 1 个就够，多了反而抢锁）")
+    parser.add_argument("--queue", type=int, default=8,
+                        help="服务端排队深度：满了丢最旧的帧，别让画面越算越旧")
+    parser.add_argument("--pace-fps", type=float, default=0.0,
+                        help="强制匀速消费（0=来多少算多少）")
     args = parser.parse_args()
 
     if not Path(args.weights).is_file():
@@ -344,10 +369,16 @@ def main() -> int:
     Handler.iou, Handler.device = args.iou, args.device
     Handler.window = max(1, min(int(args.window), 32))
     STATE["token"] = args.token
+    # 推理流水线：有界 FIFO + 定数 worker（服务端也要缓冲，不然一到就是十几帧全挤进来）
+    Handler.pipeline = InferPipeline(infer, workers=args.workers,
+                                    capacity=args.queue, pace_fps=args.pace_fps,
+                                    wait_timeout=2.0)
 
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"\n[服务] 监听 {args.host}:{args.port}   imgsz={args.imgsz} conf={args.conf} "
           f"device={args.device}")
+    print(f"       推理流水线：{args.workers} 个 worker，队列 {args.queue} 帧"
+          + (f"，限速 {args.pace_fps:.0f} fps" if args.pace_fps > 0 else "，不限速"))
     if args.host in ("0.0.0.0", ""):
         hosts = local_ipv4_list() or ["<本机局域网IP>"]
     else:
