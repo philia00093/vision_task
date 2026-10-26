@@ -221,7 +221,9 @@ def main():
                     min_score=args.stage_min_score,
                     kp_gate=args.stage_kp_gate,
                     min_inliers=args.stage_min_inliers,
-                    edges=args.stage_edges)
+                    edges=args.stage_edges,
+                    nn_max_dist=args.stage_nn_max_dist,
+                    nn_kwargs={"margin": args.stage_nn_margin})
             elif args.stage_method == "sift":
                 stage = SiftStageMatcher.from_directory(
                     stage_dir, ref_size=max(args.stage_size * 4, 128),

@@ -488,7 +488,8 @@ DEFAULT_NN_SIZE = 128            # 规格化边长
 DEFAULT_NN_PATCH = 8             # 小块边长
 DEFAULT_NN_STRIDE = 4            # 小块步长
 DEFAULT_NN_SEARCH = 1            # 邻域搜索半径（格），容忍几个像素的位移
-DEFAULT_NN_MAX_DIST = 0.30       # 距离超过它就算"没见过这个阶段"
+DEFAULT_NN_MAX_DIST = 0.42       # 距离超过它就算"没见过这个阶段"（灯光差一点也会抬到 0.3+）
+DEFAULT_NN_MARGIN = 0.08         # 最好的那个至少要比第二名好 8%，否则也算"分不清"
 DEFAULT_KP_GATE = 140            # 关键点数低于它 → 走近邻；高于它 → 走 SIFT
 DEFAULT_MIN_INLIERS = 12         # SIFT 分支：内点数低于它就当 unknown
 DEFAULT_NN_LABELS = ("step0", "step1")
@@ -512,13 +513,14 @@ class PatchNnStageMatcher:
                  patch: int = DEFAULT_NN_PATCH, stride: int = DEFAULT_NN_STRIDE,
                  search: int = DEFAULT_NN_SEARCH, max_dist: float = DEFAULT_NN_MAX_DIST,
                  labels=DEFAULT_NN_LABELS, weight_mag: float = DEFAULT_NN_WEIGHT_MAG,
-                 edges: bool = False):
+                 edges: bool = False, margin: float = DEFAULT_NN_MARGIN):
         self.size = int(size)
         self.edges = bool(edges)
         self.patch = int(patch)
         self.stride = int(stride)
         self.search = int(search)
         self.max_dist = float(max_dist)
+        self.margin = float(margin)
         self.labels = tuple(labels) if labels else None
         self.weight_mag = float(weight_mag)
         self.names: list[str] = []
@@ -663,11 +665,18 @@ class PatchNnStageMatcher:
         label, score = ranked[0]
         second = ranked[1][1] if len(ranked) > 1 else 0.0
         best_dist = 1.0 - score
+        second_dist = 1.0 - second if len(ranked) > 1 else 9.9
         if best_dist > self.max_dist:
             label = "unknown"
+            note = f"距离 {best_dist:.3f} > {self.max_dist:.2f}"
+        elif second_dist < 9.0 and best_dist > 0 and \
+                (second_dist - best_dist) / max(best_dist, 1e-6) < self.margin:
+            # 两个阶段一样像 → 不硬认（空盘/过渡状态经常是这样）
+            label = "unknown"
+            note = f"前两名太接近：{best_dist:.3f} vs {second_dist:.3f}"
         return {"label": label, "raw_label": ranked[0][0], "score": score, "angle": 0.0,
                 "region": self._region, "method": "nn", "dist": best_dist,
-                "second": second}
+                "second": second, "note": locals().get("note", "")}
 
 
 class CascadeStageMatcher:

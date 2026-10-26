@@ -10,6 +10,7 @@ import argparse
 from edge.constants import BACKENDS, DEFAULT_HTTP_WINDOW, DEFAULT_COVER_DELTA, DEFAULT_COVER_MARGIN, DEFAULT_COVER_WINDOW, DEFAULT_DARK_V_MAX, DEFAULT_GREEN_HI, DEFAULT_GREEN_LO, DEFAULT_INFER_BACKEND, DEFAULT_JPEG_QUALITY, DEFAULT_KF_ACC, DEFAULT_KF_MEAS, DEFAULT_LINE_WIDTH, DEFAULT_SERVER_TIMEOUT, DEFAULT_SERVER_URL, DEFAULT_TRACK_MAX_AGE, DEFAULT_TRAIL_LEN, DEFAULT_WIRE, DEFAULT_YOLO_CONF, DEFAULT_YOLO_IMGSZ, DEFAULT_YOLO_INTERVAL, DEFAULT_YOLO_IOU, DEFAULT_YOLO_WEIGHTS, DEFAULT_ZONES_FILE, DEFAULT_ZONE_INTERVAL, DEFAULT_ZONE_LOCK_FRAMES, DEFAULT_ZONE_SCAN_TOP, DEFAULT_ZONE_WIDTH, GREEN_MIN_AREA_RATIO, GREEN_ZONE_MIN_AREA_RATIO, LABEL_FONT_SIZE, STAGE_FONT_SIZE
 from edge.stage_match import (DEFAULT_ANGLE_RANGE, DEFAULT_ANGLE_STEP,
                               DEFAULT_KP_GATE, DEFAULT_MIN_INLIERS,
+                              DEFAULT_NN_MARGIN, DEFAULT_NN_MAX_DIST,
                               DEFAULT_REFINE_STEP, DEFAULT_STAGE_INTERVAL,
                               DEFAULT_STAGE_MARGIN, DEFAULT_STAGE_SIZE,
                               MIN_STAGE_SCORE, STAGE_DEFAULT_DIR)
@@ -131,6 +132,10 @@ DETECT_ARGUMENTS = (
                                help="阶段匹配算法：cascade=按关键点数分流"
                                     "（少→稠密块近邻，多→SIFT，推荐）；"
                                     "sift=只用特征点；grad=旧的梯度模板法")),
+    (("--stage-nn-max-dist",), dict(type=float, default=DEFAULT_NN_MAX_DIST,
+                                    help="近邻分支：最近距离超过它就记 unknown")),
+    (("--stage-nn-margin",), dict(type=float, default=DEFAULT_NN_MARGIN,
+                                  help="近邻分支：第一名要比第二名好这个比例，否则算分不清")),
     (("--stage-kp-gate",), dict(type=int, default=DEFAULT_KP_GATE,
                                 help="关键点数门槛：低于它走近邻（光面阶段），"
                                      "高于它走 SIFT（有齿/有孔阶段）")),
