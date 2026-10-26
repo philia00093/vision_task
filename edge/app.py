@@ -23,7 +23,7 @@ from edge.grabber import FrameGrabber
 from edge.imaging import contours_to_boxes, prepare_detect_input, save_image, take_right
 from edge.parts import PartTracker
 from edge.stage_match import CascadeStageMatcher, SiftStageMatcher, StageMatcher
-from edge.stage_parts import UNKNOWN, stage_from_parts
+from edge.stage_parts import UNKNOWN, PartCounter, stage_from_parts
 from edge.stage_worker import StageWorker
 from edge.project import ROOT, ensure_dir
 from edge.zone_tracker import ZoneTracker, load_zones, parse_zones
@@ -211,6 +211,7 @@ def main():
         # ---- 阶段识别：基础视觉（旋转遍历 + 模板匹配），只吃装配区裁剪图 ----
         # 和上面零件跟踪并列共存：一个管"每件零件在哪"，一个管"装到第几步"，互不等待。
         stage_worker = None          # 后台识别线程（stage 没启用就是 None）
+        part_counter = None          # 数零件定阶段（4 类零件少几个 = 第几步）
         if args.no_stage:
             print("阶段识别：已用 --no-stage 关闭")
         else:
@@ -252,6 +253,10 @@ def main():
                           "；也可用 --stage-region 固定窗口")
                 # 识别放后台线程：主循环到点丢一帧就走，不等那 130ms
                 stage_worker = StageWorker(stage)
+                # 数零件定阶段：4 类零件里物料区少了几个就是第几步（比图像比对稳）
+                if tracker_parts is not None:
+                    part_counter = PartCounter(tracker_parts.names.values(),
+                                               memory=args.part_memory)
                 print(f"         匹配在后台线程跑（主循环不被卡）；"
                       f"识别异常会打在状态栏 stage error 上")
 
@@ -481,10 +486,13 @@ def main():
                     # 先用零件类别走规则（2/3 步能直接定，还省掉 130ms 图像匹配）；
                     # 规则说"0/1 分不出"（返回 None）时才落到图像分支。
                     rule_stage, rule_reason, rule_score = (UNKNOWN, "", 0.0)
-                    if tracker_parts is not None and region is not None:
+                    material_rect = tracker_zones.region("物料区")
+                    if part_counter is not None and region is not None:
+                        rule_stage, rule_reason, rule_score = part_counter.update(
+                            detections, tracker_parts.names, region, material_rect)
+                    elif tracker_parts is not None and region is not None:
                         rule_stage, rule_reason, rule_score = stage_from_parts(
-                            detections, tracker_parts.names, region,
-                            tracker_zones.region("物料区"))
+                            detections, tracker_parts.names, region, material_rect)
                     if rule_stage is not None:
                         stage_history.append((now_stage, {
                             "label": rule_stage, "raw_label": rule_stage,

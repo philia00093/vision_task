@@ -32,6 +32,8 @@
 
 from __future__ import annotations
 
+import time
+
 UNKNOWN = "unknown"
 
 
@@ -109,3 +111,67 @@ def stage_from_parts(detections, names, assembly_rect, material_rect,
     if inside:
         return UNKNOWN, f"装配区只有 {sorted(inside)}，不是已知阶段", 0.0
     return UNKNOWN, "装配区是空的", 0.0
+
+
+# ============================================================================
+# 计数版：4 个零件，物料区里少了几个，就是走到了第几步
+# ============================================================================
+DEFAULT_PART_MEMORY = 4.0        # 一个零件多少秒没在物料区见到才算"被拿走了"
+
+
+class PartCounter:
+    """数零件定阶段。
+
+    工序就是一条直线：零件从**物料区**被拿走、装到**装配区**。所以
+
+        step = (4 个零件里已经离开物料区的个数) - 1
+
+    装配之前：base 拿走 → 0 步；再拿走 support → 1 步；再 compass → 2 步；再 top → 3 步。
+
+    为什么要"记忆"：单帧漏检很常见（杆子细、被托盘边缘挡住），如果一帧没检出就
+    当成被拿走了，步数会乱跳。所以每个类别记一个"最后一次在物料区看见的时间"，
+    超过 `memory` 秒没再看见，才算真的拿走了。
+    """
+
+    def __init__(self, expected, memory=DEFAULT_PART_MEMORY):
+        self.expected = list(expected)
+        self.memory = float(memory)
+        now = time.time()
+        # 开机先当作"都在托盘里"，否则第一帧还没检出就全算拿走 → 直接跳到第 3 步
+        self._last_seen = {name: now for name in self.expected}
+
+    def reset(self) -> None:
+        for name in self._last_seen:
+            self._last_seen[name] = 0.0
+
+    def update(self, detections, names, assembly_rect, material_rect, now=None):
+        """返回 (stage, reason, score)。stage 是 "step0".."stepN"，认不出就是 "unknown"。"""
+        now = time.time() if now is None else now
+        in_material = classes_in(detections, names, material_rect)
+        in_assembly = classes_in(detections, names, assembly_rect)
+        for name in in_material:
+            self._last_seen[name] = now
+
+        present = [name for name in self.expected
+                   if self._last_seen[name] and (now - self._last_seen[name]) <= self.memory]
+        taken = [name for name in self.expected if name not in present]
+
+        # 装配区里已经出现的，也一定是拿走了（比"记忆"更可靠）
+        for name in in_assembly:
+            if name in self.expected and name not in taken:
+                taken.append(name)
+                if name in present:
+                    present.remove(name)
+
+        if not taken:
+            return "unknown", "物料区 4 个零件都在，还没开始装", 0.0
+        if "base" not in taken:
+            # 盘还没拿，其它零件却不见了 —— 状态不成立
+            return "unknown", f"盘还在物料区，但少了 {sorted(taken)}", 0.0
+
+        step = min(len(taken) - 1, len(self.expected) - 1)
+        confs = [in_material.get(n, in_assembly.get(n, 0.0)) for n in taken]
+        score = min([c for c in confs if c > 0], default=0.0)
+        return (f"step{step}",
+                f"物料区少了 {sorted(taken)}（{len(present)}/{len(self.expected)} 还在）",
+                score)

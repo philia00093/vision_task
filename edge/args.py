@@ -154,6 +154,8 @@ DETECT_ARGUMENTS = (
                                help="强制指定装配区裁剪窗口；不给就用锁定后的装配区框")),
     (("--stage-label-size",), dict(type=int, default=STAGE_FONT_SIZE,
                                    help="「阶段」标签在画面上的字号（默认比普通标签大一号）")),
+    (("--part-memory",), dict(type=float, default=4.0,
+                              help="零件多少秒没在物料区出现才算被拿走（防单帧漏检）")),
     (("--stage-period",), dict(type=float, default=0.5,
                                help="每隔多少秒识别一次阶段（按时间，不按帧数）")),
     (("--stage-window",), dict(type=float, default=1.0,
