@@ -16,7 +16,7 @@ from edge.camera import fourcc_str, open_camera, probe_modes
 from edge.capture import CaptureDeck, on_mouse
 from edge.constants import CAPTURE_SPECS, DEFAULT_TRAY_MIN_FILL, DEFAULT_YOLO_WEIGHTS, DEFAULT_ZONES_FILE, GREEN_MIN_FILL_RATIO, HAND_COLOR, IMAGE_SUFFIXES, PART_COLOR, TRAIL_COLOR, WINDOW, ZONE_COLORS
 from edge.defects import AreaChecker, find_part
-from edge.drawing import (_measure_label, draw_detection, draw_machine_state,
+from edge.drawing import (_measure_label, draw_area_verdict, draw_detection, draw_machine_state,
                           draw_overlay, draw_stage, draw_trail, draw_zone,
                           draw_text_box, load_cjk_font)
 from edge.framebuffer import FbWriter
@@ -330,7 +330,6 @@ def main():
     stage_cost = 0.0                 # 上一次阶段识别的耗时（ms，Pi 上调参数看这个数）
     last_infer_ts = 0.0              # 上一次提交推理的时间（--infer-fps 用）
     last_source = None               # 最近一次提交给模型的裁剪图（面积检查在它上面量）
-    area_draw_box = None             # 偏导找出来的零件边框（view 坐标，画在屏上）
     last_scale, last_offset = 1.0, (0.0, 0.0)
     stage_history = deque()          # 最近 --stage-window 秒的判定：(ts, 结果)
     stage_last_ts = 0.0              # 上一次跑阶段识别的时间（0 = 立刻跑第一次）
@@ -483,8 +482,6 @@ def main():
                         if part is not None:
                             was_ok = area_check.ok
                             area_check.push(part["area"])
-                            bx, by, bw, bh = part["bbox"]
-                            area_draw_box = (bx + ox, by + oy, bw, bh)   # 换回 view 坐标
                             if (area_check.calibrated and area_check.ok != was_ok
                                     and area_check.judged > 0):
                                 tag = "合格" if area_check.ok else "不合格"
@@ -622,15 +619,11 @@ def main():
                                    f"{det['name']} {det['conf']:.2f}", PART_COLOR,
                                    font=label_font, thickness=args.line_width,
                                    top_margin=status_height)
-                # 偏导找出来的零件边框（黄框）+ 面积判定贴在它下面
-                if area_check is not None and area_draw_box is not None:
-                    bx, by, bw, bh = (int(v) for v in area_draw_box)
-                    cv2.rectangle(view, (bx, by), (bx + bw, by + bh), (0, 255, 255),
-                                  max(1, args.line_width - 1))
-                    if area_check.judged > 0:
-                        draw_text_box(view, area_check.label(), bx, by + bh + 26,
-                                      (0, 200, 0) if area_check.ok else (0, 0, 255),
-                                      font=label_font)
+                # 面积判定写在右上角（不画框，不挡零件）
+                if area_check is not None and area_check.judged > 0:
+                    state_h = _measure_label(tracker_zones.machine_state(), label_font)[1]
+                    draw_area_verdict(view, area_check.label(), ok=area_check.ok,
+                                      font=label_font, top=status_height, below=state_h + 12)
 
                 # 阶段标签贴「装配区」框的右上角（左上角是区域名），和零件框互不遮挡
                 if stage is not None:

@@ -185,6 +185,21 @@ def draw_stage(image, box, text, color=STAGE_COLOR, font=None, top_margin=0):
     draw_text_box(image, text, x2 - 2, text_y, color, font=font, right=True)
     return image
 
+def draw_area_verdict(image, text, ok=True, font=None, margin=10, top=0, below=0):
+    """把零件面积判定写在**右上角**（工位状态下面一行）。
+
+    不放框上：框上那点地方又要贴零件名、又要贴框边，面积这种"结论"写在角落更清楚，
+    也不挡零件本身。
+    """
+    if not text:
+        return image
+    patch_h = _measure_label(text, font)[1] if font is not None else 30
+    y = max(int(top), 0) + int(below) + patch_h + 10
+    draw_text_box(image, text, image.shape[1] - margin, y,
+                  (0, 200, 0) if ok else (0, 0, 255), font=font, right=True)
+    return image
+
+
 def draw_machine_state(image, text, font=None, color=STATE_COLOR, margin=10, top=0):
     """把工位状态提示画在**整个屏幕的右上角**（不是某个框上面）。
 
