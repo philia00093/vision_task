@@ -31,6 +31,7 @@ import cv2
 import numpy as np
 
 DEFAULT_TOL = 0.04          # 容差：4% 以外算不合格
+DEFAULT_SEARCH = 0.35       # 搜索窗在检测框基础上外扩多少（只是"找零件"的范围，不参与测量）
 DEFAULT_WINDOW = 9          # 取最近多少次测量取中位数
 DEFAULT_CALIB = 9           # 开机先量多少帧当基准
 
@@ -151,3 +152,65 @@ class AreaChecker:
             return f"{self.name} 标定中"
         return (f"{self.name} A{self.area:.0f} {self.ratio*100:+.1f}% "
                 f"{'合格' if self.ok else '不合格'}")
+
+
+def find_part(image, box, search: float = DEFAULT_SEARCH, min_side: int = 8):
+    """用检测框当**搜索窗**，在窗内用偏导自己找出零件的轮廓和边框。
+
+    为什么不用检测框直接量：YOLO 的框每帧会抖 ±3 像素，框一紧就裁掉零件边缘，
+    面积跟着差 7%（实测）。零件自己的边框应该由**它自己的边缘**决定 ——
+    所以这里 Sobel 求边缘、闭运算、取离窗心最近的那条外轮廓，
+    返回这条轮廓的面积、外接框、圆心半径。检测框只负责"去哪找"，不参与测量。
+
+    返回 dict：area / bbox / center / radius / circle_area；找不到返回 None。
+    """
+    if image is None or box is None:
+        return None
+    x1, y1, x2, y2 = (float(v) for v in box)
+    w, h = x2 - x1, y2 - y1
+    if w < min_side or h < min_side:
+        return None
+    X1 = int(max(0, x1 - w * search)); Y1 = int(max(0, y1 - h * search))
+    X2 = int(min(image.shape[1], x2 + w * search)); Y2 = int(min(image.shape[0], y2 + h * search))
+    window = image[Y1:Y2, X1:X2]
+    if window.size == 0:
+        return None
+    gray = cv2.cvtColor(window, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    gray = cv2.GaussianBlur(gray, (5, 5), 0)
+    gx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
+    gy = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
+    mag = cv2.magnitude(gx, gy)
+    mag = np.clip(mag / (np.percentile(mag, 98) + 1e-6) * 255.0, 0, 255).astype(np.uint8)
+    _, mask = cv2.threshold(mag, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
+    mask = cv2.dilate(mask, np.ones((3, 3), np.uint8), iterations=1)
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return None
+
+    # 零件中心 ≈ 检测框中心在窗口里的位置
+    cx0, cy0 = (x1 + x2) * 0.5 - X1, (y1 + y2) * 0.5 - Y1
+    best, best_d = None, 1e18
+    for contour in contours:
+        moments = cv2.moments(contour)
+        if moments["m00"] <= 0:
+            continue
+        cx = moments["m10"] / moments["m00"]
+        cy = moments["m01"] / moments["m00"]
+        dist = (cx - cx0) ** 2 + (cy - cy0) ** 2
+        if dist < best_d:
+            best, best_d = contour, dist
+    if best is None:
+        return None
+
+    area = float(cv2.contourArea(best))
+    bx, by, bw, bh = cv2.boundingRect(best)
+    (mx, my), radius = cv2.minEnclosingCircle(best)
+    return {
+        "area": area,
+        "bbox": (bx + X1, by + Y1, bw, bh),          # 换回原图坐标
+        "center": (mx + X1, my + Y1),
+        "radius": float(radius),
+        "circle_area": float(np.pi * radius * radius),
+        "window": (X1, Y1, X2 - X1, Y2 - Y1),
+    }

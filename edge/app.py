@@ -15,7 +15,7 @@ from edge.args import build_parser
 from edge.camera import fourcc_str, open_camera, probe_modes
 from edge.capture import CaptureDeck, on_mouse
 from edge.constants import CAPTURE_SPECS, DEFAULT_TRAY_MIN_FILL, DEFAULT_YOLO_WEIGHTS, DEFAULT_ZONES_FILE, GREEN_MIN_FILL_RATIO, HAND_COLOR, IMAGE_SUFFIXES, PART_COLOR, TRAIL_COLOR, WINDOW, ZONE_COLORS
-from edge.defects import AreaChecker, edge_area
+from edge.defects import AreaChecker, find_part
 from edge.drawing import (_measure_label, draw_detection, draw_machine_state,
                           draw_overlay, draw_stage, draw_trail, draw_zone,
                           draw_text_box, load_cjk_font)
@@ -330,6 +330,7 @@ def main():
     stage_cost = 0.0                 # 上一次阶段识别的耗时（ms，Pi 上调参数看这个数）
     last_infer_ts = 0.0              # 上一次提交推理的时间（--infer-fps 用）
     last_source = None               # 最近一次提交给模型的裁剪图（面积检查在它上面量）
+    area_draw_box = None             # 偏导找出来的零件边框（view 坐标，画在屏上）
     last_scale, last_offset = 1.0, (0.0, 0.0)
     stage_history = deque()          # 最近 --stage-window 秒的判定：(ts, 结果)
     stage_last_ts = 0.0              # 上一次跑阶段识别的时间（0 = 立刻跑第一次）
@@ -476,16 +477,20 @@ def main():
                         bx1, by1, bx2, by2 = target["box"]
                         box_crop = ((bx1 - ox) / last_scale, (by1 - oy) / last_scale,
                                     (bx2 - ox) / last_scale, (by2 - oy) / last_scale)
-                        was_ok = area_check.ok
-                        # 加 12% 外扩：零件必须**完整**落在裁剪图里，面积才不受框抖动影响
-                        # （实测框抖 ±3px，不留余量时面积差 7%，留余量后只差 0.5%）
-                        area_check.push(edge_area(last_source, box_crop, pad=args.part_pad))
-                        if (area_check.calibrated and area_check.ok != was_ok
-                                and area_check.judged > 0):
-                            tag = "合格" if area_check.ok else "不合格"
-                            print(f"[缺陷] compass 面积 {area_check.area:.0f}"
-                                  f"（基准 {area_check.ref:.0f}，"
-                                  f"误差 {area_check.ratio*100:+.1f}%）→ {tag}", flush=True)
+                        # 检测框只当"搜索窗"，边框和面积都由偏导找出来的零件轮廓决定
+                        # （实测框抖 ±5px，轮廓面积只变 0.46%；直接拿框裁会变 7%）
+                        part = find_part(last_source, box_crop, search=args.part_search)
+                        if part is not None:
+                            was_ok = area_check.ok
+                            area_check.push(part["area"])
+                            bx, by, bw, bh = part["bbox"]
+                            area_draw_box = (bx + ox, by + oy, bw, bh)   # 换回 view 坐标
+                            if (area_check.calibrated and area_check.ok != was_ok
+                                    and area_check.judged > 0):
+                                tag = "合格" if area_check.ok else "不合格"
+                                print(f"[缺陷] compass 轮廓面积 {area_check.area:.0f}"
+                                      f"（基准 {area_check.ref:.0f}，"
+                                      f"误差 {area_check.ratio*100:+.1f}%）→ {tag}", flush=True)
                 # 每一帧都入队（包括因为窗口满被背压丢掉、没发给电脑的那些）。
                 # 之前只存"发出去的帧"，链路一旦掉速，队列就被抽干 → 水位不足 → 画面卡住。
                 if sync_display:
@@ -617,12 +622,13 @@ def main():
                                    f"{det['name']} {det['conf']:.2f}", PART_COLOR,
                                    font=label_font, thickness=args.line_width,
                                    top_margin=status_height)
-                # 面积判定单独一行贴在 compass 框下沿：「A17646 +0.3% 合格」/ 红色「不合格」
-                if area_check is not None and area_check.judged > 0:
-                    target = next((d for d in detections if d["name"] == "compass"), None)
-                    if target is not None:
-                        bx1, by1, bx2, by2 = target["box"]
-                        draw_text_box(view, area_check.label(), bx1, by2 + 26,
+                # 偏导找出来的零件边框（黄框）+ 面积判定贴在它下面
+                if area_check is not None and area_draw_box is not None:
+                    bx, by, bw, bh = (int(v) for v in area_draw_box)
+                    cv2.rectangle(view, (bx, by), (bx + bw, by + bh), (0, 255, 255),
+                                  max(1, args.line_width - 1))
+                    if area_check.judged > 0:
+                        draw_text_box(view, area_check.label(), bx, by + bh + 26,
                                       (0, 200, 0) if area_check.ok else (0, 0, 255),
                                       font=label_font)
 
