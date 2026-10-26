@@ -35,12 +35,13 @@ class PartTracker:
                  kf_acc=DEFAULT_KF_ACC, kf_meas=DEFAULT_KF_MEAS,
                  server_url=DEFAULT_SERVER_URL, server_token="",
                  jpeg_quality=DEFAULT_JPEG_QUALITY, server_timeout=DEFAULT_SERVER_TIMEOUT,
-                 wire=DEFAULT_WIRE, window=6, track=True, exclude_rect=None):
+                 wire=DEFAULT_WIRE, window=6, result_hold=1.5,
+                 track=True, exclude_rect=None):
         self.runner = YoloRunner(weights, backend=backend, imgsz=imgsz, conf=conf,
                                  iou=iou, device=device, server_url=server_url,
                                  server_token=server_token, jpeg_quality=jpeg_quality,
                                  server_timeout=server_timeout, wire_format=wire,
-                                 window=window)
+                                 window=window, result_hold=result_hold)
         self.track = bool(track)          # False=完全不做跟踪
         self.exclude_rect = exclude_rect  # 这个矩形（装配区）里的零件不跟踪
         self._raw: list = []             # 框内零件的原始检测（不跟踪）

@@ -65,7 +65,7 @@ class RemoteRunner:
     · json  ：老的裸 JPEG + JSON（服务端返回里没有 ACK，退化为停等）
     """
 
-    def __init__(self, url, token="", quality=80, timeout=1.0, stale_after=0.6,
+    def __init__(self, url, token="", quality=80, timeout=1.0, stale_after=1.5,
                  wire_format=DEFAULT_WIRE, window=6):
         self.url = url.rstrip("/")
         self.token = token
@@ -376,9 +376,10 @@ class YoloRunner:
                  conf=DEFAULT_YOLO_CONF, iou=DEFAULT_YOLO_IOU, device=None,
                  server_url=DEFAULT_SERVER_URL, server_token="",
                  jpeg_quality=DEFAULT_JPEG_QUALITY, server_timeout=DEFAULT_SERVER_TIMEOUT,
-                 wire_format=DEFAULT_WIRE, window=6):
+                 wire_format=DEFAULT_WIRE, window=6, result_hold=1.5):
         self.weights = str(weights)
         self.backend = backend
+        self.result_hold = float(result_hold)
         self.imgsz = int(imgsz)
         self.conf, self.iou = float(conf), float(iou)
         self.device = device or None
@@ -407,7 +408,8 @@ class YoloRunner:
                                        quality=self.jpeg_quality,
                                        timeout=self.server_timeout,
                                        wire_format=self.wire_format,
-                                       window=self.window)
+                                       window=self.window,
+                                       stale_after=self.result_hold)
             if self.remote.start():
                 self.names = dict(self.remote.names)
             else:

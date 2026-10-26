@@ -171,6 +171,7 @@ def main():
                                     jpeg_quality=args.jpeg_quality,
                                     server_timeout=args.server_timeout,
                                     wire=args.wire, window=args.http_window,
+                                    result_hold=args.result_hold,
                                     track=not args.no_track)
     if detect:
         if zone_mode == "green":
@@ -313,6 +314,7 @@ def main():
     detections: list[dict] = []      # 零件检测结果；识别间隔之间沿用上一帧
     stage_result = None              # 阶段识别结果；间隔之间沿用上一次（标签不闪）
     stage_cost = 0.0                 # 上一次阶段识别的耗时（ms，Pi 上调参数看这个数）
+    last_infer_ts = 0.0              # 上一次提交推理的时间（--infer-fps 用）
     stage_history = deque()          # 最近 --stage-window 秒的判定：(ts, 结果)
     stage_last_ts = 0.0              # 上一次跑阶段识别的时间（0 = 立刻跑第一次）
 
@@ -411,7 +413,15 @@ def main():
             # ---------------- 零件：每 --yolo-interval 帧跑一次 YOLO + 每帧卡尔曼预测 ----
             submitted_now = False
             if detect and tracker_parts is not None:
-                if frame_count == 1 or frame_count % max(args.yolo_interval, 1) == 0:
+                # 两种节流：按帧数（--yolo-interval）或按时间（--infer-fps）。
+                # 链路差的时候按帧数塞会把 TCP 窗口灌满，帧就变成"一阵一阵到"，
+                # 识别看起来就是断断续续；按秒限速能让到达变平整。
+                if args.infer_fps > 0:
+                    due = (time.time() - last_infer_ts) >= (1.0 / args.infer_fps)
+                else:
+                    due = frame_count == 1 or frame_count % max(args.yolo_interval, 1) == 0
+                if due:
+                    last_infer_ts = time.time()
                     # 只上传"工作区"（--upload-crop）：面积小 → JPEG 小、编码快，
                     # 而且模型在同样 imgsz 下看到的零件更大更准。
                     crop = args.upload_crop

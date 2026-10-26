@@ -23,6 +23,9 @@ DETECT_ARGUMENTS = (
     (("--detect-interval",), dict(type=int, default=1,
                                   help="每 N 帧做一次识别（>1 可提帧率，中间帧沿用上次结果）")),
     # ---- 抽帧节流：按帧数（--yolo-interval 10 = 每 10 帧跑一次 YOLO）----
+    (("--infer-fps",), dict(type=float, default=0.0,
+                            help="每秒最多提交几帧去识别（0=按 --yolo-interval 帧数走）；"
+                                 "链路差时设 8~10 能让到达变平整")),
     (("--yolo-interval",), dict(type=int, default=DEFAULT_YOLO_INTERVAL,
                                 help="每多少帧跑一次 YOLO（默认 10；中间帧用卡尔曼预测补框）")),
     (("--zone-interval",), dict(type=int, default=DEFAULT_ZONE_INTERVAL,
@@ -39,6 +42,9 @@ DETECT_ARGUMENTS = (
                                help="http 后端：和服务端 --token 一致的口令（可留空）")),
     (("--jpeg-quality",), dict(type=int, default=DEFAULT_JPEG_QUALITY,
                                help="http 后端：发出去的 JPEG 质量（越小越省带宽、越糊）")),
+    (("--result-hold",), dict(type=float, default=1.5,
+                              help="检测结果保鲜多少秒：网络偶尔断几秒时"
+                                   "沿用上一次的框，不让画面一闪一闪")),
     (("--server-timeout",), dict(type=float, default=DEFAULT_SERVER_TIMEOUT,
                                  help="http 后端：单次请求超时秒数，超时这一轮就没结果")),
     (("--http-window",), dict(type=int, default=DEFAULT_HTTP_WINDOW,
