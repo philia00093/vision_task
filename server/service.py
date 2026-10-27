@@ -226,10 +226,12 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         label = ""
+        subdir = ""
         query = self.path.split("?", 1)
         if len(query) > 1:
             params = urllib.parse.parse_qs(query[1])
             label = (params.get("label") or [""])[0]
+            subdir = (params.get("dir") or [""])[0]
         if self.command == "POST":
             try:
                 length = int(self.headers.get("Content-Length", "0") or 0)
@@ -250,7 +252,16 @@ class Handler(BaseHTTPRequestHandler):
             pass
         label = "".join(ch for ch in label if ch not in '\\/:*?"<>|').strip()[:32]
 
-        SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+        # 训练样本按阶段分目录存：/save?label=step0&dir=steps/step0
+        # （目录名只允许普通字符，拦住 ../ 之类）
+        target_dir = SNAPSHOT_DIR
+        if subdir:
+            safe = "/".join(part for part in urllib.parse.unquote(subdir).replace("\\", "/").split("/")
+                            if part and part not in (".", "..")
+                            and all(ch.isalnum() or ch in "-_." for ch in part))
+            if safe:
+                target_dir = SNAPSHOT_DIR / safe
+        target_dir.mkdir(parents=True, exist_ok=True)
         # 按文件头判断真实格式（二进制通路上来是 JPEG，JSON 通路可能收到 PNG）
         if jpeg[:8] == b"\x89PNG\r\n\x1a\n":
             suffix = ".png"
@@ -260,7 +271,7 @@ class Handler(BaseHTTPRequestHandler):
             suffix = ".bin"
         now = time.strftime("%Y%m%d_%H%M%S") + f"_{int((time.time() % 1) * 1000):03d}"
         name = f"{now}_{label}{suffix}" if label else f"{now}{suffix}"
-        target = SNAPSHOT_DIR / name
+        target = target_dir / name
         try:
             target.write_bytes(jpeg)
         except OSError as error:

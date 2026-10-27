@@ -4,6 +4,9 @@
 
 from __future__ import annotations
 
+import json
+import threading
+
 import numpy as np
 import cv2
 import time
@@ -31,6 +34,24 @@ from edge.touch import TouchReader
 from edge.project import ROOT, ensure_dir
 from edge.zone_tracker import ZoneTracker, load_zones, parse_zones
 from edge.zones import zone_mask
+
+
+def _save_step(server_url: str, label: str) -> None:
+    """按一下采样按钮：让电脑端把**它刚收到的那一帧**存成训练样本。
+
+    存到 output/snapshots/steps/<label>/ 下，文件名带时间戳。
+    训练用的时候按目录取就行（同一张图也会被后面标注工具读）。
+    """
+    import urllib.parse
+    import urllib.request
+    url = (f"{server_url.rstrip('/')}/save?label={urllib.parse.quote(label)}"
+           f"&dir=steps/{urllib.parse.quote(label)}")
+    try:
+        with urllib.request.urlopen(url, timeout=3) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        print(f"[采样] {label} → {payload.get('path', '?')}", flush=True)
+    except Exception as error:
+        print(f"[采样] {label} 失败：{error}", flush=True)
 
 
 def commit_stage(history, window, now):
@@ -486,6 +507,15 @@ def main():
                             tracker_parts.detect(detect_input, detect_scale, offset,
                                                  view_size=(view.shape[1], view.shape[0]))
                 detections = tracker_parts.tick()      # 每帧都跑：预测补框，显示才连贯
+                # ---- 触摸按钮：存 step0~3 训练样本（存到电脑上的 server）----
+                step_rects = []
+                if touch is not None:
+                    vh2, vw2 = view.shape[:2]
+                    bw, bh = 190, 90
+                    for i in range(4):
+                        sx = 30 + i * (bw + 10)
+                        step_rects.append((f"step{i}", (sx, vh2 - bh - 30, sx + bw, vh2 - 30)))
+
                 # ---- 触摸按钮 + 支撑杆计转（本机逻辑，不走网络）----
                 if touch is not None and screw is not None:
                     vh, vw = view.shape[:2]
@@ -503,6 +533,17 @@ def main():
                         if not pressed:
                             continue
                         vx, vy = (tx - ox) / sc, (ty - oy) / sc
+                        hit = None
+                        for label, (sx1, sy1, sx2, sy2) in step_rects:
+                            if sx1 <= vx <= sx2 and sy1 <= vy <= sy2:
+                                hit = label
+                                break
+                        if hit is not None:
+                            # 存到电脑：GET /save?label=stepN&dir=steps/stepN
+                            # 用后台线程发，别让网络卡住画面
+                            threading.Thread(target=_save_step, args=(args.server_url, hit),
+                                             daemon=True).start()
+                            continue
                         if bx1 <= vx <= bx2 and by1 <= vy <= by2:
                             screw.start()
                             print("[螺丝] 开始装配支撑杆：统计圈数，目标 ≥ "
@@ -705,6 +746,14 @@ def main():
                                    font=label_font, thickness=args.line_width,
                                    top_margin=status_height)
                 # 面积判定写在右上角（不画框，不挡零件）
+                # ---- 屏幕底部左侧：存 step0~3 训练样本 ----
+                if touch is not None:
+                    for label, (sx1, sy1, sx2, sy2) in step_rects:
+                        cv2.rectangle(view, (sx1, sy1), (sx2, sy2), (90, 90, 90), -1)
+                        cv2.rectangle(view, (sx1, sy1), (sx2, sy2), (220, 220, 220), 2)
+                        draw_text_box(view, f"存 {label}", sx1 + 14, sy1 + 12,
+                                      (90, 90, 90), font=label_font)
+
                 # ---- 屏幕右下角：开始装配支撑杆 按钮（触摸屏点它开始计转）----
                 if screw is not None:
                     vh, vw = view.shape[:2]
