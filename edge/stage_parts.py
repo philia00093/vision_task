@@ -133,9 +133,18 @@ class PartCounter:
     超过 `memory` 秒没再看见，才算真的拿走了。
     """
 
-    def __init__(self, expected, memory=DEFAULT_PART_MEMORY):
+    # 装配区里**模型看得见**的类别：只有这些才能用来做"到位"校核。
+    # support（压在盘上的斜杆）和 top（小铜帽）模型在装配区里基本检不到，
+    # 拿它们做校核只会一直报"没到位"，所以只校核 base 和 compass。
+    OBSERVABLE = ("base", "compass")
+
+    def __init__(self, expected, memory=DEFAULT_PART_MEMORY,
+                 warn_seconds: float = 6.0):
         self.expected = list(expected)
         self.memory = float(memory)
+        self.warn_seconds = float(warn_seconds)
+        self._assembled_seen: dict[str, float] = {}
+        self.warnings: list[str] = []
         now = time.time()
         # 开机先当作"都在托盘里"，否则第一帧还没检出就全算拿走 → 直接跳到第 3 步
         self._last_seen = {name: now for name in self.expected}
@@ -153,6 +162,8 @@ class PartCounter:
         now = time.time() if now is None else now
         in_material = classes_in(detections, names, material_rect)
         in_assembly = classes_in(detections, names, assembly_rect)
+        for name in in_assembly:
+            self._assembled_seen[name] = now       # 装配区里见过的部件记一笔
         for name in in_material:
             self._last_seen[name] = now
             self._seen_once.add(name)
@@ -171,6 +182,14 @@ class PartCounter:
                 if name in present:
                     present.remove(name)
 
+        # ---- 双区校核：物料区少了的东西，装配区得见到 ----
+        self.warnings = []
+        for name in taken:
+            if name not in self.OBSERVABLE:
+                continue
+            seen = self._assembled_seen.get(name, 0.0)
+            if seen < now - self.warn_seconds:
+                self.warnings.append(f"物料区少了 {name}，但装配区没见到")
         if not taken:
             return "unknown", "物料区 4 个零件都在，还没开始装", 0.0
         if "base" not in taken:
@@ -178,8 +197,10 @@ class PartCounter:
             return "unknown", f"盘还在物料区，但少了 {sorted(taken)}", 0.0
 
         step = min(len(taken) - 1, len(self.expected) - 1)
+        where = "装配区：" + ("、".join(sorted(self._assembled_seen)) or "无")
         confs = [in_material.get(n, in_assembly.get(n, 0.0)) for n in taken]
         score = min([c for c in confs if c > 0], default=0.0)
-        return (f"step{step}",
-                f"物料区少了 {sorted(taken)}（{len(present)}/{len(self.expected)} 还在）",
-                score)
+        reason = (f"物料区少了 {sorted(taken)}（{len(present)}/{len(self.expected)} 还在）| {where}")
+        if self.warnings:
+            reason += " | ⚠ " + "；".join(self.warnings)
+        return f"step{step}", reason, score
