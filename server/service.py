@@ -19,6 +19,7 @@ import sys
 import time
 import json
 import argparse
+import re
 import socket
 from types import SimpleNamespace
 from pathlib import Path
@@ -269,8 +270,19 @@ class Handler(BaseHTTPRequestHandler):
             suffix = ".jpg"
         else:
             suffix = ".bin"
-        now = time.strftime("%Y%m%d_%H%M%S") + f"_{int((time.time() % 1) * 1000):03d}"
-        name = f"{now}_{label}{suffix}" if label else f"{now}{suffix}"
+        if subdir and label:
+            # 训练样本用连续编号：steps/step_0_1.jpg、step_0_2.jpg ……
+            # 这样按名字排序就是采集顺序，也方便后面按前缀统计张数
+            index = 1
+            pattern = re.compile(rf"^{re.escape(label)}_(\d+)$")
+            for existing in target_dir.glob(f"{label}_*{suffix}"):
+                found = pattern.match(existing.stem)
+                if found:
+                    index = max(index, int(found.group(1)) + 1)
+            name = f"{label}_{index}{suffix}"
+        else:
+            now = time.strftime("%Y%m%d_%H%M%S") + f"_{int((time.time() % 1) * 1000):03d}"
+            name = f"{now}_{label}{suffix}" if label else f"{now}{suffix}"
         target = target_dir / name
         try:
             target.write_bytes(jpeg)

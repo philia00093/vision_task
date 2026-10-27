@@ -44,8 +44,10 @@ def _save_step(server_url: str, label: str) -> None:
     """
     import urllib.parse
     import urllib.request
-    url = (f"{server_url.rstrip('/')}/save?label={urllib.parse.quote(label)}"
-           f"&dir=steps/{urllib.parse.quote(label)}")
+    # 电脑端存成 output/snapshots/steps/step_<N>_<序号>.jpg
+    step_no = label.replace("step", "")
+    url = (f"{server_url.rstrip('/')}/save?label=step_{urllib.parse.quote(step_no)}"
+           f"&dir=steps")
     try:
         with urllib.request.urlopen(url, timeout=3) as response:
             payload = json.loads(response.read().decode("utf-8"))
