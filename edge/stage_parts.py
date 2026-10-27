@@ -116,7 +116,7 @@ def stage_from_parts(detections, names, assembly_rect, material_rect,
 # ============================================================================
 # 计数版：4 个零件，物料区里少了几个，就是走到了第几步
 # ============================================================================
-DEFAULT_PART_MEMORY = 4.0        # 一个零件多少秒没在物料区见到才算"被拿走了"
+DEFAULT_PART_MEMORY = 8.0        # 一个零件多少秒没在物料区见到才算"被拿走了"
 
 
 class PartCounter:
@@ -139,6 +139,10 @@ class PartCounter:
         now = time.time()
         # 开机先当作"都在托盘里"，否则第一帧还没检出就全算拿走 → 直接跳到第 3 步
         self._last_seen = {name: now for name in self.expected}
+        # 从来没在物料区见过的零件**不算被拿走**：小件（top 铜帽）经常漏检，
+        # 漏一次就当成"拿走了"会让步数提前跳（实测 step0 直接跳到 step2）。
+        self._seen_once: set[str] = set()
+        self._unseen_since = {name: now for name in self.expected}
 
     def reset(self) -> None:
         for name in self._last_seen:
@@ -151,10 +155,14 @@ class PartCounter:
         in_assembly = classes_in(detections, names, assembly_rect)
         for name in in_material:
             self._last_seen[name] = now
+            self._seen_once.add(name)
 
         present = [name for name in self.expected
-                   if self._last_seen[name] and (now - self._last_seen[name]) <= self.memory]
-        taken = [name for name in self.expected if name not in present]
+                   if name in self._seen_once
+                   and (now - self._last_seen[name]) <= self.memory]
+        # 从没见过的类别先不参与判断（宁可少算，也不要提前跳步）
+        taken = [name for name in self.expected
+                 if name in self._seen_once and name not in present]
 
         # 装配区里已经出现的，也一定是拿走了（比"记忆"更可靠）
         for name in in_assembly:
