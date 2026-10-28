@@ -355,10 +355,9 @@ def main():
     screw = ScrewTurns(min_turns=args.screw_min_turns, target_max=args.screw_max_turns,
                        stop_seconds=args.screw_stop, marker_hsv=marker_hsv)
     if marker_hsv:
-        print(f"支撑杆计转：**色标模式**（{args.marker}）—— 贴在杆的一端，"
-              f"转一圈标记绕一圈")
+        print(f"支撑杆计转：色标模式（{args.marker}）")
     else:
-        print("支撑杆计转：梯度模式（无标记，精度有限）")
+        print("支撑杆计转：**偏心运动模式**（帧间差 + 半径加权，不用任何标记）")
     if not args.no_touch:
         scr_w = fb_screen.width if fb_screen is not None else 1024
         scr_h = fb_screen.height if fb_screen is not None else 600

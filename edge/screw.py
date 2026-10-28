@@ -112,6 +112,42 @@ def hist_shift(prev, cur, bins: int = DEFAULT_BINS):
     return degrees, conf
 
 
+def motion_angle(prev_gray, cur_gray, center=None,
+                 inner: float = 0.12, outer: float = 0.98):
+    """偏心运动方向：这一帧**动过的像素**按"离轴心的距离"加权后的圆周平均方向。
+
+    为什么这样算：杆绕轴转，杆上每点的线速度 ∝ 半径，所以**偏心杆头动得最多**。
+    把帧间差里动过的像素按半径加权，方向加权平均就指向"动得最厉害的那一头"。
+    杆转多少，这个方向就转多少 —— 不需要颜色标记，也不依赖纹理统计。
+    """
+    if prev_gray is None or cur_gray is None or cur_gray.size == 0:
+        return None, 0.0
+    height, width = cur_gray.shape[:2]
+    cx, cy = (width * 0.5, height * 0.5) if center is None else center
+    diff = np.abs(cur_gray.astype(np.float32) - prev_gray.astype(np.float32))
+    diff = cv2.GaussianBlur(diff, (5, 5), 0)
+    threshold = max(6.0, float(diff.mean()) + 2.0 * float(diff.std()))
+    ys, xs = np.nonzero(diff > threshold)
+    if xs.size < 12:
+        return None, 0.0
+    dx = xs.astype(np.float32) - cx
+    dy = ys.astype(np.float32) - cy
+    radius = np.hypot(dx, dy)
+    limit = min(width, height) * 0.5
+    keep = (radius > inner * limit) & (radius < outer * limit)
+    if np.count_nonzero(keep) < 12:
+        return None, 0.0
+    weights = diff[ys, xs][keep] * radius[keep]          # 越远权重越大
+    angles = np.arctan2(dy[keep], dx[keep])
+    sin_sum = float((weights * np.sin(angles)).sum())
+    cos_sum = float((weights * np.cos(angles)).sum())
+    if abs(sin_sum) < 1e-6 and abs(cos_sum) < 1e-6:
+        return None, 0.0
+    angle = math.degrees(math.atan2(sin_sum, cos_sum))
+    conf = float(np.hypot(sin_sum, cos_sum) / (weights.sum() + 1e-6))   # 0~1，越高越集中
+    return angle, conf
+
+
 def marker_angle(roi, hsv_lo, hsv_hi, center=None):
     """在 ROI 里找一个**色标**，返回它相对 ROI 中心的角度。
 
@@ -198,8 +234,10 @@ class ScrewTurns:
         self.target_max = float(target_max)
         self.stop_seconds = float(stop_seconds)
         self.max_step_deg = float(max_step_deg)
-        self.marker_hsv = marker_hsv            # (lo, hi)；给了就用色标，否则退回梯度
-        self.mode = "marker" if marker_hsv else "grad"
+        self.marker_hsv = marker_hsv            # (lo, hi)；给了就走色标，否则走偏心运动
+        self.mode = "marker" if marker_hsv else "motion"
+        self._prev_gray = None                  # 上一帧 ROI 灰度（偏心运动用）
+        self.motion_conf = 0.0
         self.state = IDLE
         self.turns = 0.0
         self.angle = None
@@ -221,6 +259,7 @@ class ScrewTurns:
         self._accum = 0.0
         self._last_angle = None
         self._last_hist = None
+        self._prev_gray = None
         self.started_at = time.time() if now is None else now
         self.last_move = self.started_at
 
@@ -263,7 +302,31 @@ class ScrewTurns:
                 self.last_move = now
             return
 
-        # ② 没贴色标：退回梯度方向直方图（弱，仅作兜底）
+        # ② 没色标：用**偏心运动**（帧间差 + 半径加权 + 圆周平均方向）
+        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY) if roi.ndim == 3 else roi
+        angle, conf = motion_angle(self._prev_gray, gray)
+        self._prev_gray = gray
+        self.motion_conf = conf
+        self.conf = conf
+        if angle is None or conf < 0.12:
+            self.lost += 1
+            return
+        self.lost = 0
+        self.angle = angle
+        if self._last_angle is None:
+            self._last_angle = angle
+            return
+        delta = (angle - self._last_angle + 180.0) % 360.0 - 180.0
+        self._last_angle = angle
+        if abs(delta) > self.max_step_deg:
+            return
+        if abs(delta) >= DEFAULT_MIN_MOVE_DEG:
+            self._accum += abs(delta)
+            self.turns = self._accum / 360.0
+            self.last_move = now
+        return
+
+        # ②' （旧的梯度直方图兜底，保留但不再走）
         hist = grad_hist(roi)
         conf = 0.0
         delta = None
