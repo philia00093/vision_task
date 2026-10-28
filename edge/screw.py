@@ -40,7 +40,7 @@ DEFAULT_MIN_TURNS = 4.5         # 至少 4 圈半
 DEFAULT_TARGET_MAX = 5.0        # 显示用的"目标上限"
 DEFAULT_STOP_SECONDS = 0.8      # 停手多久算拧完
 DEFAULT_MAX_STEP_DEG = 90.0     # 单帧最大可信转角（超过视为丢帧/折叠）
-DEFAULT_MIN_MOVE_DEG = 0.8      # 小于这个角度算"没动"（慢拧每帧只有 1~2°）
+DEFAULT_MIN_MOVE_DEG = 1.5      # 小于这个角度算"没动"（再小就是噪声）
 
 IDLE, RUNNING, OK, NG = "idle", "running", "ok", "ng"
 
@@ -121,7 +121,7 @@ def motion_angle(prev_gray, cur_gray, center=None,
     杆转多少，这个方向就转多少 —— 不需要颜色标记，也不依赖纹理统计。
     """
     if prev_gray is None or cur_gray is None or cur_gray.size == 0:
-        return None, 0.0
+        return None, 0.0, 0.0
     height, width = cur_gray.shape[:2]
     cx, cy = (width * 0.5, height * 0.5) if center is None else center
     diff = np.abs(cur_gray.astype(np.float32) - prev_gray.astype(np.float32))
@@ -129,23 +129,24 @@ def motion_angle(prev_gray, cur_gray, center=None,
     threshold = max(6.0, float(diff.mean()) + 2.0 * float(diff.std()))
     ys, xs = np.nonzero(diff > threshold)
     if xs.size < 12:
-        return None, 0.0
+        return None, 0.0, 0.0
     dx = xs.astype(np.float32) - cx
     dy = ys.astype(np.float32) - cy
     radius = np.hypot(dx, dy)
     limit = min(width, height) * 0.5
     keep = (radius > inner * limit) & (radius < outer * limit)
     if np.count_nonzero(keep) < 12:
-        return None, 0.0
+        return None, 0.0, 0.0
     weights = diff[ys, xs][keep] * radius[keep]          # 越远权重越大
+    energy = float(diff[ys, xs][keep].mean())            # 平均变化强度（噪声约 2~5）
     angles = np.arctan2(dy[keep], dx[keep])
     sin_sum = float((weights * np.sin(angles)).sum())
     cos_sum = float((weights * np.cos(angles)).sum())
     if abs(sin_sum) < 1e-6 and abs(cos_sum) < 1e-6:
-        return None, 0.0
+        return None, 0.0, 0.0
     angle = math.degrees(math.atan2(sin_sum, cos_sum))
     conf = float(np.hypot(sin_sum, cos_sum) / (weights.sum() + 1e-6))   # 0~1，越高越集中
-    return angle, conf
+    return angle, conf, energy
 
 
 def marker_angle(roi, hsv_lo, hsv_hi, center=None):
@@ -237,6 +238,8 @@ class ScrewTurns:
         self.marker_hsv = marker_hsv            # (lo, hi)；给了就走色标，否则走偏心运动
         self.mode = "marker" if marker_hsv else "motion"
         self._prev_gray = None                  # 上一帧 ROI 灰度（偏心运动用）
+        self._dir = 0                           # 旋转方向锁（+1/-1，0=还没定）
+        self._signed = 0.0                      # 带符号累计（只用来定方向）
         self.motion_conf = 0.0
         self.state = IDLE
         self.turns = 0.0
@@ -260,6 +263,8 @@ class ScrewTurns:
         self._last_angle = None
         self._last_hist = None
         self._prev_gray = None
+        self._dir = 0
+        self._signed = 0.0
         self.started_at = time.time() if now is None else now
         self.last_move = self.started_at
 
@@ -304,11 +309,14 @@ class ScrewTurns:
 
         # ② 没色标：用**偏心运动**（帧间差 + 半径加权 + 圆周平均方向）
         gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY) if roi.ndim == 3 else roi
-        angle, conf = motion_angle(self._prev_gray, gray)
+        angle, conf, energy = motion_angle(self._prev_gray, gray)
         self._prev_gray = gray
         self.motion_conf = conf
         self.conf = conf
-        if angle is None or conf < 0.12:
+        # 三道门限，防止"没拧也算圈数飙涨"：
+        #   ① 方向集中度够高（噪声的方向是散的）
+        #   ② 平均变化强度够大（静止画面只有 2~5 的噪声）
+        if angle is None or conf < 0.35 or energy < 8.0:
             self.lost += 1
             return
         self.lost = 0
@@ -320,10 +328,18 @@ class ScrewTurns:
         self._last_angle = angle
         if abs(delta) > self.max_step_deg:
             return
-        if abs(delta) >= DEFAULT_MIN_MOVE_DEG:
-            self._accum += abs(delta)
-            self.turns = self._accum / 360.0
-            self.last_move = now
+        if abs(delta) < DEFAULT_MIN_MOVE_DEG:
+            return
+        #   ③ 方向锁：拧紧只有一个方向。先按累计的符号定方向，
+        #     之后反号的小角度一律不理（反号大半是噪声导致的翻转）。
+        self._signed += delta
+        if self._dir == 0 and abs(self._signed) > 15.0:
+            self._dir = 1 if self._signed > 0 else -1
+        if self._dir != 0 and delta * self._dir < 0 and abs(delta) < 30.0:
+            return
+        self._accum += abs(delta)
+        self.turns = self._accum / 360.0
+        self.last_move = now
         return
 
         # ②' （旧的梯度直方图兜底，保留但不再走）
