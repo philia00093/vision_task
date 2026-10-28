@@ -45,6 +45,56 @@ DEFAULT_MIN_MOVE_DEG = 2.0      # 小于这个角度算"没动"
 IDLE, RUNNING, OK, NG = "idle", "running", "ok", "ng"
 
 
+DEFAULT_BINS = 36            # 梯度方向直方图的分箱数（2θ 上 0~360，每箱 10° → θ 上 5°）
+
+
+def grad_hist(roi, bins: int = DEFAULT_BINS):
+    """ROI 的**梯度方向直方图**（按幅值加权）。
+
+    为什么用 2θ：无向边缘的梯度方向每 180° 就重复，直接统计 θ 会把一条直线
+    的两个方向拆成两堆。用 2θ 表示后，旋转 φ 对应直方图整体平移 2φ，
+    圆周互相关一波就能求出来 —— 不需要找"亮斑/顶点"这种脆弱的特征。
+    """
+    if roi is None or roi.size == 0:
+        return None
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY) if roi.ndim == 3 else roi
+    gray = cv2.GaussianBlur(gray.astype(np.float32), (5, 5), 0)
+    gx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
+    gy = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
+    mag = cv2.magnitude(gx, gy)
+    total = float(mag.sum())
+    if total <= 1e-3:                      # 一片死平，没有梯度
+        return None
+    angle = np.arctan2(gy, gx)             # -π ~ π
+    doubled = np.mod(2.0 * angle, 2.0 * np.pi)
+    idx = (doubled * (bins / (2.0 * np.pi))).astype(np.int32) % bins
+    hist = np.bincount(idx.ravel(), weights=mag.ravel(), minlength=bins).astype(np.float64)
+    hist /= (hist.sum() + 1e-9)
+    return hist
+
+
+def hist_shift(prev, cur, bins: int = DEFAULT_BINS):
+    """两个方向直方图的圆周互相关 → (旋转角°, 置信度)。
+
+    旋转 φ 会让 2θ 直方图平移 2φ，所以互相关峰在第 δ 个箱时 φ = δ*180/bins 度。
+    置信度 = 峰值 / 均值，太低说明画面没有明显方向结构（被挡住/没零件）。
+    """
+    if prev is None or cur is None or len(prev) != len(cur):
+        return None, 0.0
+    score = []
+    for shift in range(bins):
+        rolled = np.roll(cur, shift)
+        score.append(float(np.dot(prev, rolled)))
+    score = np.asarray(score)
+    peak = int(np.argmax(score))
+    mean = float(score.mean()) + 1e-9
+    conf = float(score[peak]) / mean
+    if peak > bins // 2:                   # 取最近的旋转方向（±90° 内）
+        peak -= bins
+    degrees = peak * (180.0 / bins)        # 2θ 上每箱 10° → θ 上 5°
+    return degrees, conf
+
+
 def tip_angle(roi, center=None):
     """在一小块图里找"偏心标记点"，返回 (角度°, 置信度)。
 
@@ -101,6 +151,7 @@ class ScrewTurns:
         self.started_at = 0.0
         self.last_move = 0.0
         self._last_angle = None
+        self._last_hist = None
         self._accum = 0.0
 
     # ------------------------------------------------------------ 控制
@@ -112,6 +163,7 @@ class ScrewTurns:
         self.lost = 0
         self._accum = 0.0
         self._last_angle = None
+        self._last_hist = None
         self.started_at = time.time() if now is None else now
         self.last_move = self.started_at
 
@@ -131,19 +183,22 @@ class ScrewTurns:
         now = time.time() if now is None else now
         if self.state != RUNNING:
             return
-        angle, conf = tip_angle(roi)
+        # 梯度方向直方图的帧间平移 = 这一帧转过的角度
+        hist = grad_hist(roi)
+        conf = 0.0
+        delta = None
+        if hist is not None and self._last_hist is not None:
+            delta, conf = hist_shift(self._last_hist, hist)
+            if conf < 1.6:                    # 方向结构不明显：这一帧不算
+                delta = None
+        if hist is not None:
+            self._last_hist = hist
         self.conf = conf
-        if angle is None:
+        if delta is None:
             self.lost += 1
             return                            # 跟丢只是暂停累积，不结算（等按钮）
         self.lost = 0
-        if self._last_angle is None:
-            self._last_angle = angle
-            self.angle = angle
-            return
-        delta = (angle - self._last_angle + 180.0) % 360.0 - 180.0   # 折到 (-180,180]
-        self._last_angle = angle
-        self.angle = angle
+        self.angle = float(delta)
         if abs(delta) > self.max_step_deg:    # 这一帧不可信：别累积
             return
         if abs(delta) >= DEFAULT_MIN_MOVE_DEG:

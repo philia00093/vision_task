@@ -176,6 +176,8 @@ DETECT_ARGUMENTS = (
                                   help="支撑杆至少要拧多少圈才算合格（默认 4.5）")),
     (("--screw-max-turns",), dict(type=float, default=5.0,
                                   help="目标圈数上限（只用于显示）")),
+    (("--screw-roi-ratio",), dict(type=float, default=0.45,
+                                  help="默认 ROI = 装配区中心、边长为区域的这个比例")),
     (("--screw-roi",), dict(type=int, nargs=4, metavar=("X", "Y", "W", "H"),
                             default=None,
                             help="固定螺丝 ROI（画面坐标）；不给就用装配区里的 base/support 框")),
