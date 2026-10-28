@@ -70,7 +70,14 @@ def commit_stage(history, window, now):
     votes = {}
     for _ts, item in history:
         votes.setdefault(item.get("label") or "", []).append(item)
-    label, items = max(votes.items(), key=lambda kv: (len(kv[1]), kv[1][-1].get("score", 0)))
+    def _score(item):
+        """投票并列时用来比第二关键字；score 可能来自不同分支，统一转成 float。"""
+        try:
+            return float(item.get("score", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    label, items = max(votes.items(), key=lambda kv: (len(kv[1]), _score(kv[1][-1])))
     need = max(2, int(len(history) * 0.6 + 0.999))
     if len(items) < need and len(history) > 1:
         return None
