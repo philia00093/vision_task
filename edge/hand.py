@@ -35,6 +35,7 @@ import numpy as np
 from edge.tracking import KalmanTrack
 
 DEFAULT_MIN_AREA = 0.004        # 手至少占画面这个比例才算（滤掉小臂一小块）
+DEFAULT_MAX_AREA = 0.25         # 手最多占画面这个比例（木桌面/背景连成一片时会被整块框住）
 DEFAULT_MAX_AGE = 8             # 丢检多少帧后删掉轨迹
 DEFAULT_TRAIL = 16
 
@@ -57,9 +58,11 @@ class HandTracker:
     """一只/两只手的检测 + 卡尔曼跟踪。"""
 
     def __init__(self, min_area_ratio: float = DEFAULT_MIN_AREA,
+                 max_area_ratio: float = DEFAULT_MAX_AREA,
                  max_age: int = DEFAULT_MAX_AGE, trail_len: int = DEFAULT_TRAIL,
                  max_hands: int = 2, scale: float = 0.5):
         self.min_area = float(min_area_ratio)
+        self.max_area = float(max_area_ratio)
         self.max_age = int(max_age)
         self.trail_len = int(trail_len)
         self.max_hands = int(max_hands)
@@ -87,8 +90,9 @@ class HandTracker:
         boxes = []
         for contour in contours:
             area = cv2.contourArea(contour)
-            if area / area_max < self.min_area:
-                continue
+            ratio = area / area_max
+            if ratio < self.min_area or ratio > self.max_area:
+                continue                       # 太小=碎块，太大=桌面/背景
             x, y, w, h = cv2.boundingRect(contour)
             # 手的形状大概是"一团+一条手臂"，太细长的（比如一根手指/反光条）不要
             if w < 8 or h < 8:
@@ -98,7 +102,7 @@ class HandTracker:
                 continue
             inv = 1.0 / self.scale
             box = (x * inv, y * inv, (x + w) * inv, (y + h) * inv)
-            boxes.append((box, min(0.99, 0.4 + area / area_max * 3.0)))
+            boxes.append((box, min(0.99, 0.4 + ratio * 3.0)))
         boxes.sort(key=lambda item: -(item[0][2] - item[0][0]) * (item[0][3] - item[0][1]))
         return boxes[:self.max_hands]
 

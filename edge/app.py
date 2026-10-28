@@ -539,7 +539,20 @@ def main():
                 # ---- 手部：肤色分割 + 卡尔曼跟踪，并把"手在各区域的占比"写回区域状态 ----
                 hands = []
                 if hand_tracker is not None:
-                    hands = hand_tracker.update(view)
+                    raw_hands = hand_tracker.update(view)
+                    # 只保留"在工作区附近"的手：木桌面、台灯臂这些肤色块离料盘很远，
+                    # 直接按"手框与两区并集的重叠"过掉，免得乱框。
+                    union = None
+                    boxes_ok = [z["box"] for z in tracker_zones.zones if z.get("box")]
+                    if boxes_ok:
+                        ux1 = min(b[0] for b in boxes_ok); uy1 = min(b[1] for b in boxes_ok)
+                        ux2 = max(b[2] for b in boxes_ok); uy2 = max(b[3] for b in boxes_ok)
+                        mx = (ux2 - ux1) * 0.25; my = (uy2 - uy1) * 0.25
+                        union = (ux1 - mx, uy1 - my, ux2 - ux1 + 2 * mx, uy2 - uy1 + 2 * my)
+                    for hand in raw_hands:
+                        if union is not None and hand_tracker.zone_ratio(hand["box"], union) < 0.3:
+                            continue
+                        hands.append(hand)
                     for zone in tracker_zones.zones:
                         box = zone.get("box")
                         if box is None:
