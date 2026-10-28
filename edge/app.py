@@ -829,18 +829,10 @@ def main():
                         if det["trail"]:
                             draw_trail(view, det["trail"], TRAIL_COLOR,
                                        thickness=args.trail_width)
-                # 手：有 21 关键点就只画点（不画框），没有才退回框
+                # 手：只画 21 个关键点，**不画任何手框**
                 if keypoints:
                     draw_keypoints(view, keypoints, HAND_COLOR,
                                    radius=max(3, args.line_width + 1))
-                for hand in hands if not keypoints else []:
-                    if hand.get("trail"):
-                        draw_trail(view, hand["trail"], HAND_COLOR,
-                                   thickness=max(2, args.trail_width - 1))
-                    tag = "hand*" if hand.get("from") == "mediapipe" else "hand"
-                    draw_detection(view, hand["box"], f"{tag} {hand['conf']:.2f}",
-                                   HAND_COLOR, font=label_font,
-                                   thickness=args.line_width, top_margin=status_height)
 
                 # 装配区里的零件**完全不画**：不跟踪、也不显示静态框和标签。
                 # （框还能用于阶段计数，只是不上屏）
@@ -911,12 +903,6 @@ def main():
 
                 # 手部框：帧格式里预留的槽位。电脑端将来接了手部识别，这里自动就画出来；
                 # 现在服务端一般发 valid=0，也就是不画。
-                if tracker_parts is not None and tracker_parts.runner.remote is not None:
-                    hand = tracker_parts.runner.remote.hand
-                    if hand and int(hand.get("cls", -1)) not in (0, 1, 2, 3, 4):
-                        draw_detection(view, hand["xyxy"], f"hand {hand['conf']:.2f}",
-                                       HAND_COLOR, font=label_font,
-                                       thickness=args.line_width, top_margin=status_height)
             now = time.time()
             if now - last_time >= 0.5:                      # 滑动窗口瞬时帧率（不含启动预热）
                 fps_now = (frame_count - last_count) / max(now - last_time, 1e-6)
