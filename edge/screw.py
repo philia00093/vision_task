@@ -149,6 +149,42 @@ def motion_angle(prev_gray, cur_gray, center=None,
     return angle, conf, energy
 
 
+def find_tip_by_motion(prev_gray, cur_gray, center=None, min_frac: float = 0.25):
+    """从帧间差里找"动得最厉害、且离轴心足够远"的那个点 = 偏心杆的顶点。
+
+    只在没有顶点可跟时用一次（会话刚开始、或者跟丢了）。
+    """
+    if prev_gray is None or cur_gray is None:
+        return None
+    height, width = cur_gray.shape[:2]
+    cx, cy = (width * 0.5, height * 0.5) if center is None else center
+    diff = np.abs(cur_gray.astype(np.float32) - prev_gray.astype(np.float32))
+    diff = cv2.GaussianBlur(diff, (5, 5), 0)
+    radius = np.hypot(np.arange(width)[None, :] - cx, np.arange(height)[:, None] - cy)
+    limit = min(width, height) * 0.5
+    score = diff * radius
+    score[radius < min_frac * limit] = 0               # 轴心附近不动，别选
+    score[radius > 0.98 * limit] = 0                   # 盘外/边界不要
+    if float(score.max()) < 40.0:
+        return None
+    y, x = np.unravel_index(int(np.argmax(score)), score.shape)
+    return float(x), float(y)
+
+
+def track_tip(prev_gray, cur_gray, tip):
+    """LK 光流跟一个点。返回新位置或 None（跟丢）。"""
+    if tip is None or prev_gray is None or cur_gray is None:
+        return None
+    points = np.array([[tip]], np.float32)
+    moved, status, _err = cv2.calcOpticalFlowPyrLK(
+        prev_gray, cur_gray, points, None,
+        winSize=(21, 21), maxLevel=3,
+        criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 20, 0.03))
+    if moved is None or status is None or int(status[0][0]) != 1:
+        return None
+    return float(moved[0][0][0]), float(moved[0][0][1])
+
+
 def marker_angle(roi, hsv_lo, hsv_hi, center=None):
     """在 ROI 里找一个**色标**，返回它相对 ROI 中心的角度。
 
@@ -237,7 +273,8 @@ class ScrewTurns:
         self.max_step_deg = float(max_step_deg)
         self.marker_hsv = marker_hsv            # (lo, hi)；给了就走色标，否则走偏心运动
         self.mode = "marker" if marker_hsv else "motion"
-        self._prev_gray = None                  # 上一帧 ROI 灰度（偏心运动用）
+        self._prev_gray = None                  # 上一帧 ROI 灰度
+        self._tip = None                        # 正在跟的顶点（偏心杆头）
         self._dir = 0                           # 旋转方向锁（+1/-1，0=还没定）
         self._signed = 0.0                      # 带符号累计（只用来定方向）
         self.motion_conf = 0.0
@@ -263,6 +300,7 @@ class ScrewTurns:
         self._last_angle = None
         self._last_hist = None
         self._prev_gray = None
+        self._tip = None
         self._dir = 0
         self._signed = 0.0
         self.started_at = time.time() if now is None else now
@@ -307,20 +345,46 @@ class ScrewTurns:
                 self.last_move = now
             return
 
-        # ② 没色标：用**偏心运动**（帧间差 + 半径加权 + 圆周平均方向）
+        # ② 没色标：**只跟顶点**（偏心杆头）
+        #    杆头绕轴画圆 → 角度 = atan2(顶点 - 轴心)，相邻帧角度差解卷绕累计。
+        #    之前用"整块运动的圆周平均"，噪声区域多、方向乱，圈数会飙；
+        #    现在只维护一个点，噪声完全可控。
         gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY) if roi.ndim == 3 else roi
-        angle, conf, energy = motion_angle(self._prev_gray, gray)
+        height, width = gray.shape[:2]
+        cx, cy = width * 0.5, height * 0.5
+        limit = min(width, height) * 0.5
+        tip = None
+        if self._tip is not None:
+            tip = track_tip(self._prev_gray, gray, self._tip)
+            if tip is not None:
+                # 校验：顶点到轴心的半径应该基本不变（在圆周上）
+                ratio = math.hypot(tip[0] - cx, tip[1] - cy) / max(
+                    math.hypot(self._tip[0] - cx, self._tip[1] - cy), 1e-6)
+                if not (0.75 <= ratio <= 1.33):
+                    tip = None
+        if tip is None:                              # 跟丢/刚启动：重新找
+            tip = find_tip_by_motion(self._prev_gray, gray, (cx, cy))
+            if tip is not None:
+                self._last_angle = None              # 重新定基准，避免跳变被当成转动
         self._prev_gray = gray
-        self.motion_conf = conf
-        self.conf = conf
-        # 三道门限，防止"没拧也算圈数飙涨"：
-        #   ① 方向集中度够高（噪声的方向是散的）
-        #   ② 平均变化强度够大（静止画面只有 2~5 的噪声）
-        if angle is None or conf < 0.35 or energy < 8.0:
+        if tip is None:
             self.lost += 1
             return
+        # 注意：位移要在**更新 _tip 之前**算，否则自己跟自己比恒为 0（刚踩过）
+        moved_px = (0.0 if self._tip is None
+                    else math.hypot(tip[0] - self._tip[0], tip[1] - self._tip[1]))
+        self._tip = tip
         self.lost = 0
+        radius = math.hypot(tip[0] - cx, tip[1] - cy)
+        if radius < 0.15 * limit:                    # 太靠轴心，角度不准
+            return
+        # 顶点实际位移太小（亚像素抖动）就不算转动：光流在噪声上也会漂 0.5~1 px，
+        # 不加这道门 300 帧静止画面能累出 0.3 圈。
+        if moved_px < 1.2:
+            return
+        angle = math.degrees(math.atan2(tip[1] - cy, tip[0] - cx))
         self.angle = angle
+        self.conf = 1.0
         if self._last_angle is None:
             self._last_angle = angle
             return
@@ -330,12 +394,13 @@ class ScrewTurns:
             return
         if abs(delta) < DEFAULT_MIN_MOVE_DEG:
             return
-        #   ③ 方向锁：拧紧只有一个方向。先按累计的符号定方向，
-        #     之后反号的小角度一律不理（反号大半是噪声导致的翻转）。
         self._signed += delta
-        if self._dir == 0 and abs(self._signed) > 15.0:
-            self._dir = 1 if self._signed > 0 else -1
-        if self._dir != 0 and delta * self._dir < 0 and abs(delta) < 30.0:
+        if self._dir == 0:
+            if abs(self._signed) > 20.0:            # 累计够 20° 才认方向
+                self._dir = 1 if self._signed > 0 else -1
+            else:
+                return                              # 方向没定之前不计数（噪声阶段）
+        if delta * self._dir < 0 and abs(delta) < 30.0:
             return
         self._accum += abs(delta)
         self.turns = self._accum / 360.0
