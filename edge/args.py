@@ -89,6 +89,8 @@ DETECT_ARGUMENTS = (
                                      "杂物会被忽略，避免它抢走物料区/装配区的框")),
     (("--merge-gap",), dict(type=int, default=0,
                             help="水平间距小于该值的色块合并（料盘被反光切开时用）")),
+    (("--hand-cover",), dict(type=float, default=0.5,
+                             help="手在物料区里占多大比例算\"正在取料\"（默认 0.5 = 50%%）")),
     (("--occlude-ratio",), dict(type=float, default=0.75,
                                 help="区域内当前可见量低于「基准×该比例」判为被遮挡"
                                      "（显示取料中/装配中）；实测手遮住料盘一部分时约 0.66")),

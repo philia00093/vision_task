@@ -82,7 +82,12 @@ def commit_stage(history, window, now):
     if len(items) < need and len(history) > 1:
         return None
     winner = dict(items[-1])
-    winner["score"] = sum(i.get("score", 0.0) for i in items) / len(items)
+    scores = [_score(item) for item in items]
+    bad = [item.get("method") for item in items
+           if not isinstance(item.get("score", 0.0), (int, float))]
+    if bad:
+        print(f"[阶段] 警告：这些分支的 score 不是数字 {set(bad)}，已按 0 处理", flush=True)
+    winner["score"] = sum(scores) / len(scores)
     winner["votes"] = f"{len(items)}/{len(history)}"
     return winner
 
@@ -303,6 +308,8 @@ def main():
                                                  pos_tol=args.part_pos_tol)
                 print(f"         匹配在后台线程跑（主循环不被卡）；"
                       f"识别异常会打在状态栏 stage error 上")
+        # 阶段模型最近一次出结果的时间：模型和"数零件"不要混在同一票里
+        last_model_ts = 0.0
 
     save_dir = Path(args.save_dir).expanduser()
     if not save_dir.is_absolute():
@@ -369,7 +376,7 @@ def main():
     next_tick = time.time()                                 # 固定节拍的下一个时间点
     sharpness, brightness = 0.0, 0.0
     keys_pressed = 255                                        # 上一帧的按键（255 = 无）
-    tracker_zones = ZoneTracker(occlude_ratio=args.occlude_ratio, zones=preset_zones,
+    tracker_zones = ZoneTracker(hand_cover=args.hand_cover, occlude_ratio=args.occlude_ratio, zones=preset_zones,
                                 zones_file=(None if (args.no_zone_save or args.zones)
                                             else zone_file),
                                 lock_frames=args.zone_lock_frames,
@@ -516,15 +523,6 @@ def main():
                             tracker_parts.detect(detect_input, detect_scale, offset,
                                                  view_size=(view.shape[1], view.shape[0]))
                 detections = tracker_parts.tick()      # 每帧都跑：预测补框，显示才连贯
-                # ---- 触摸按钮：存 step0~3 训练样本（存到电脑上的 server）----
-                step_rects = []
-                if touch is not None:
-                    vh2, vw2 = view.shape[:2]
-                    bw, bh = 190, 90
-                    for i in range(4):
-                        sx = 30 + i * (bw + 10)
-                        step_rects.append((f"step{i}", (sx, vh2 - bh - 30, sx + bw, vh2 - 30)))
-
                 # ---- 触摸按钮 + 支撑杆计转（本机逻辑，不走网络）----
                 if touch is not None and screw is not None:
                     vh, vw = view.shape[:2]
@@ -542,17 +540,6 @@ def main():
                         if not pressed:
                             continue
                         vx, vy = (tx - ox) / sc, (ty - oy) / sc
-                        hit = None
-                        for label, (sx1, sy1, sx2, sy2) in step_rects:
-                            if sx1 <= vx <= sx2 and sy1 <= vy <= sy2:
-                                hit = label
-                                break
-                        if hit is not None:
-                            # 存到电脑：GET /save?label=stepN&dir=steps/stepN
-                            # 用后台线程发，别让网络卡住画面
-                            threading.Thread(target=_save_step, args=(args.server_url, hit),
-                                             daemon=True).start()
-                            continue
                         if bx1 <= vx <= bx2 and by1 <= vy <= by2:
                             screw.start()
                             print("[螺丝] 开始装配支撑杆：统计圈数，目标 ≥ "
@@ -654,10 +641,19 @@ def main():
                         step_names = {0: "step0", 1: "step1", 2: "step2",
                                       3: "step3", 4: "complete"}
                         if cls in step_names:
-                            model_hit = (step_names[cls], remote.hand.get("conf", 0.0),
-                                         f"阶段模型 conf={remote.hand.get('conf', 0):.2f}")
+                            try:      # conf 从二进制槽里来，保险起见转成数字
+                                conf = float(remote.hand.get("conf", 0.0) or 0.0)
+                            except (TypeError, ValueError):
+                                conf = 0.0
+                            model_hit = (step_names[cls], conf,
+                                         f"阶段模型 conf={conf:.2f}")
+                            last_model_ts = now_stage
                     if model_hit is not None:
                         rule_stage, rule_reason, rule_score = model_hit
+                    elif now_stage - last_model_ts < 3.0:
+                        # 阶段模型刚才还在出结果，这会儿没框（可能被挡一下）：
+                        # 保持上次结论，别让"数零件"插进来把标签打回 unknown
+                        rule_stage = None
                     elif part_counter is not None and region is not None:
                         rule_stage, rule_reason, rule_score = part_counter.update(
                             detections, tracker_parts.names, region, material_rect)
@@ -770,14 +766,6 @@ def main():
                                    font=label_font, thickness=args.line_width,
                                    top_margin=status_height)
                 # 面积判定写在右上角（不画框，不挡零件）
-                # ---- 屏幕底部左侧：存 step0~3 训练样本 ----
-                if touch is not None:
-                    for label, (sx1, sy1, sx2, sy2) in step_rects:
-                        cv2.rectangle(view, (sx1, sy1), (sx2, sy2), (90, 90, 90), -1)
-                        cv2.rectangle(view, (sx1, sy1), (sx2, sy2), (220, 220, 220), 2)
-                        draw_text_box(view, f"存 {label}", sx1 + 14, sy1 + 12,
-                                      (90, 90, 90), font=label_font)
-
                 # ---- 屏幕右下角：开始装配支撑杆 按钮（触摸屏点它开始计转）----
                 if screw is not None:
                     vh, vw = view.shape[:2]
@@ -903,8 +891,11 @@ def main():
                         status += f" | yolo {tracker_parts.last_cost_ms:.0f}ms"
                 if tracker_zones.locked:
                     left, right = tracker_zones.zones
-                    status += (f" | L{left['visible_ratio']:.2f}/{left['cover_delta']:.2f}"
-                               f" R{right['visible_ratio']:.2f}/{right['cover_delta']:.2f}")
+                    # 后两数是"手在该区域占的比例"，物料区那个 ≥ --hand-cover 就判取料中
+                    status += (f" | L{left['visible_ratio']:.2f}/"
+                               f"{left.get('hand_ratio', 0):.2f}"
+                               f" R{right['visible_ratio']:.2f}/"
+                               f"{right.get('hand_ratio', 0):.2f}")
             # 状态栏就地画在 view 上并盖掉刚才的占位黑条；
             # draw_overlay 返回的是高度（int），图像仍是 view 本身
             draw_overlay(view, status)

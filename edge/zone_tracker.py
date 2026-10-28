@@ -79,10 +79,11 @@ class ZoneTracker:
 
     NAMES = ("装配区", "物料区")          # 左 → 右
 
-    def __init__(self, occlude_ratio=0.75, zones=None, zones_file=None,
+    def __init__(self, hand_cover=0.5, occlude_ratio=0.75, zones=None, zones_file=None,
                  lock_frames=DEFAULT_ZONE_LOCK_FRAMES,
                  cover_margin=DEFAULT_COVER_MARGIN, cover_delta=DEFAULT_COVER_DELTA,
                  cover_window=DEFAULT_COVER_WINDOW):
+        self.hand_cover = float(hand_cover)           # 手占物料区多少算"正在取料"
         self.occlude_ratio = float(occlude_ratio)
         self.lock_frames = max(int(lock_frames), 1)
         self.cover_margin = float(cover_margin)
@@ -172,6 +173,8 @@ class ZoneTracker:
         # 上限钳到 1.0：框是碎块并集，可能比基准大，比例不该超过 1
         zone["visible_ratio"] = min(visible / max(zone["baseline"], 1.0), 1.0)
         dark_hit = zone["visible_ratio"] < self.occlude_ratio
+        # 手挡住的比例 = 1 - 还能看见的暗色比例（料盘是暗的，手挡上去就不见了）
+        dark_cover_ratio = max(0.0, 1.0 - zone["visible_ratio"])
 
         cover_hit = False
         if v_channel is not None:
@@ -192,7 +195,12 @@ class ZoneTracker:
             zone["cover"] = cover
             zone["cover_delta"] = cover - resting
             cover_hit = zone["cover_delta"] >= self.cover_delta
+            bright_cover_ratio = max(0.0, zone["cover_delta"])
         zone["occluded"] = bool(dark_hit or cover_hit)
+        # 手在这个区域里占了多少（0~1）：取两路判据里更强的那个。
+        # 用于 "手 50% 以上在物料区 = 正在取料" 这类判断。
+        bright_cover_ratio = locals().get("bright_cover_ratio", 0.0)
+        zone["hand_ratio"] = max(dark_cover_ratio, bright_cover_ratio)
 
     def update(self, boxes, mask, frame_area, v_channel=None, scale=1.0) -> list[dict]:
         """boxes/mask/frame_area 都是"识别尺度"上的量（可能被 --zone-width 缩小过）。
@@ -278,12 +286,13 @@ class ZoneTracker:
             "装配中" if zone["name"] == "装配区" else f"{zone['name']}被遮挡")
 
     def machine_state(self) -> str:
-        """工位状态：**只按物料区判断**。
+        """工位状态：只看物料区，按"手在物料区占了多少"判。
 
-        逻辑（按你的说明）：物料区被手遮住 = 正在取料，可以据此确认装配是否正确
-        → 显示"取料中"；物料区没有被遮 → 显示"装配中"。
+        > `hand_cover`（默认 50%）→ 正在取料；否则装配中。
+        用比例而不是布尔遮挡，是为了"手刚伸进来一点点"时不误报取料。
         """
         material = next((z for z in self.zones if z["name"] == "物料区"), None)
         if material is None or material["box"] is None:
             return "等待区域锁定"
-        return "取料中" if material["occluded"] else "装配中"
+        ratio = float(material.get("hand_ratio", 0.0))
+        return "取料中" if ratio >= self.hand_cover else "装配中"
