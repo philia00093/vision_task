@@ -24,6 +24,7 @@ from edge.drawing import (_measure_label, draw_area_verdict, draw_detection, dra
                           draw_text_box, load_cjk_font)
 from edge.framebuffer import FbWriter
 from edge.grabber import FrameGrabber
+from edge.hand import HandTracker
 from edge.imaging import contours_to_boxes, prepare_detect_input, save_image, take_right
 from edge.parts import PartTracker
 from edge.stage_match import CascadeStageMatcher, SiftStageMatcher, StageMatcher
@@ -251,6 +252,7 @@ def main():
         # 和上面零件跟踪并列共存：一个管"每件零件在哪"，一个管"装到第几步"，互不等待。
         stage_worker = None          # 后台识别线程（stage 没启用就是 None）
         part_counter = None          # 数零件定阶段（4 类零件少几个 = 第几步）
+        hand_tracker = None          # 手部检测+跟踪（肤色分割 + 卡尔曼）
         touch = None                 # 触摸屏（屏幕右下角的按钮用）
         screw = None                 # 支撑杆拧紧计转
         screw_rect = None            # 按钮在 view 坐标里的位置
@@ -331,6 +333,16 @@ def main():
     fb_screen = FbWriter(args.fb, mode=args.fb_mode, rotate=args.fb_rotate) if args.fb else None
     if fb_screen is not None:
         print(f"          屏幕 {fb_screen.describe()}")
+
+    # ---- 手部跟踪（本机算，不占网络带宽）----
+    if not args.no_hand:
+        hand_tracker = HandTracker(min_area_ratio=args.hand_min_area,
+                                   scale=args.hand_scale)
+        print(f"手部跟踪：肤色分割 + 卡尔曼 | 最小面积 {args.hand_min_area*100:.1f}% "
+              f"| 掩码缩放 {args.hand_scale:g}")
+    else:
+        hand_tracker = None
+        print("手部跟踪：已用 --no-hand 关闭")
 
     # ---- 触摸屏 + 支撑杆计转（都在树莓派本地跑，不依赖电脑）----
     screw = ScrewTurns(min_turns=args.screw_min_turns, target_max=args.screw_max_turns,
@@ -524,6 +536,20 @@ def main():
                             tracker_parts.detect(detect_input, detect_scale, offset,
                                                  view_size=(view.shape[1], view.shape[0]))
                 detections = tracker_parts.tick()      # 每帧都跑：预测补框，显示才连贯
+                # ---- 手部：肤色分割 + 卡尔曼跟踪，并把"手在各区域的占比"写回区域状态 ----
+                hands = []
+                if hand_tracker is not None:
+                    hands = hand_tracker.update(view)
+                    for zone in tracker_zones.zones:
+                        box = zone.get("box")
+                        if box is None:
+                            continue
+                        zx1, zy1, zx2, zy2 = box
+                        rect = (zx1, zy1, zx2 - zx1, zy2 - zy1)
+                        # 手里最大的一只决定占比（两只手同时伸进来取最大）
+                        zone["hand_ratio"] = max(
+                            (hand_tracker.zone_ratio(h["box"], rect) for h in hands),
+                            default=0.0)
                 # ---- 触摸按钮 + 支撑杆计转（本机逻辑，不走网络）----
                 if touch is not None and screw is not None:
                     vh, vw = view.shape[:2]
@@ -754,6 +780,15 @@ def main():
                         if det["trail"]:
                             draw_trail(view, det["trail"], TRAIL_COLOR,
                                        thickness=args.trail_width)
+                # 手：洋红框 + 轨迹（比零件粗，容易和零件区分）
+                for hand in hands:
+                    if hand.get("trail"):
+                        draw_trail(view, hand["trail"], HAND_COLOR,
+                                   thickness=max(2, args.trail_width - 1))
+                    draw_detection(view, hand["box"], f"hand {hand['conf']:.2f}",
+                                   HAND_COLOR, font=label_font,
+                                   thickness=args.line_width, top_margin=status_height)
+
                 # 装配区里的零件**完全不画**：不跟踪、也不显示静态框和标签。
                 # （框还能用于阶段计数，只是不上屏）
                 assembly_rect = (tuple(args.stage_region) if args.stage_region
