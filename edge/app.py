@@ -20,6 +20,7 @@ from edge.capture import CaptureDeck, on_mouse
 from edge.constants import CAPTURE_SPECS, DEFAULT_TRAY_MIN_FILL, DEFAULT_YOLO_WEIGHTS, DEFAULT_ZONES_FILE, GREEN_MIN_FILL_RATIO, HAND_COLOR, IMAGE_SUFFIXES, PART_COLOR, TRAIL_COLOR, WINDOW, ZONE_COLORS
 from edge.defects import AreaChecker, find_part
 from edge.drawing import (_measure_label, draw_area_verdict, draw_detection, draw_machine_state,
+                          row_y,
                           draw_overlay, draw_stage, draw_trail, draw_zone,
                           draw_text_box, load_cjk_font)
 from edge.framebuffer import FbWriter
@@ -182,6 +183,8 @@ def main():
     label_font = load_cjk_font(args.label_size) if detect else None
     # 阶段标签单独大一号：屏上最要紧的就是"装到第几步"，小了根本看不清
     stage_font = load_cjk_font(args.stage_label_size) if detect else None
+    # 结论类文字（零件完整性、装配到第几步）单独用大一号字体，屏上更醒目
+    verdict_font = load_cjk_font(args.verdict_size) if detect else None
     # 区域来源：--zones 手工指定 → zones.json（上次锁定的结果）→ 都没有就自动识别
     zone_file = Path(args.zones_file).expanduser() if args.zones_file else \
         ROOT / DEFAULT_ZONES_FILE
@@ -646,7 +649,8 @@ def main():
                     area_visible = False
                 if (area_check is not None and submitted_now and last_source is not None
                         and not assembly_started and not hand_present):
-                    target = next((d for d in detections if d["name"] == "compass"), None)
+                    target = next((d for d in detections
+                                   if d["name"] == "compass" and not d.get("predicted")), None)
                     if target is not None:
                         # 框是 view 坐标，先换回"模型看到的那张裁剪图"的坐标再量：
                         # 同一分辨率下量出来的面积才稳（全分辨率 view 上互换两个峰，CV 2%）
@@ -875,7 +879,8 @@ def main():
                 if area_check is not None and area_check.judged > 0 and area_visible:
                     # 固定占第 1 行（第 0 行是工位状态），行高固定 → 不会重叠
                     draw_area_verdict(view, area_check.label(), ok=area_check.ok,
-                                      font=label_font, top=status_height, row=1)
+                                      font=verdict_font or label_font,
+                                      top=status_height, row=1)
 
                 # 阶段标签贴「装配区」框的右上角（左上角是区域名），和零件框互不遮挡
                 if stage is not None:
@@ -986,10 +991,11 @@ def main():
                 if assembled_step > 0:
                     # 装配进度固定在整个画面右上角、状态提示下面一行
                     step_text = f"装配到第 {assembled_step} 步"
-                    patch_h = _measure_label(step_text, label_font)[1]
+                    big = verdict_font or label_font
+                    # 第 0 行=工位状态，第 1 行=零件完整性，第 2 行=装配到第几步
                     draw_text_box(view, step_text, view.shape[1] - 10,
-                                  status_height + patch_h * 2 + 18,
-                                  (0, 220, 0), font=label_font, right=True)
+                                  row_y(status_height, 2, big),
+                                  (0, 220, 0), font=big, right=True)
 
             # ---- 数据采集：数字键或按钮点击 ----
             # 默认存**干净帧**（没有区域框/零件框/状态栏/按钮），这样误识别的框不会被

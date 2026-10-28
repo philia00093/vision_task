@@ -165,6 +165,8 @@ DETECT_ARGUMENTS = (
     (("--stage-region",), dict(type=int, nargs=4, metavar=("X", "Y", "W", "H"),
                                default=None,
                                help="强制指定装配区裁剪窗口；不给就用锁定后的装配区框")),
+    (("--verdict-size",), dict(type=int, default=32,
+                               help="结论文字（零件完整性/装配到第几步）的字号，默认 32")),
     (("--stage-label-size",), dict(type=int, default=STAGE_FONT_SIZE,
                                    help="「阶段」标签在画面上的字号（默认比普通标签大一号）")),
     (("--no-touch",), dict(action="store_true", help="不读触摸屏（按钮照画，但点不了）")),

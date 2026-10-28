@@ -153,6 +153,11 @@ class AreaChecker:
         """喂一次测量，返回 (中位面积, 相对误差, 是否合格)。"""
         if area <= 0:
             return self.area, self.ratio, self.ok
+        # 离群值剔除：已经稳定下来之后，单帧偏离中位数 >8% 的直接丢弃
+        # （实测同一颗件会冒出 +8% 的一档，来源是检测框偶尔偏移）
+        if len(self.samples) >= 5 and self.area > 0:
+            if abs(area - self.area) / self.area > 0.08:
+                return self.area, self.ratio, self.ok
         self.samples.append(area)
         if len(self.samples) > self.window:
             del self.samples[:len(self.samples) - self.window]
