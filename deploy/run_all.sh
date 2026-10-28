@@ -15,7 +15,8 @@ set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PY="$HOME/miniforge3/envs/yolo26/bin/python"
 PI_HOST="${PI_HOST:-visionpi.local}"
-WEIGHTS="${WEIGHTS:-$ROOT/vision_yolo_train/runs/wersion_parts/weights/best.pt}"
+# 零件模型：默认用 v2（top/support 明显更稳：0.71→0.92、0.59→0.85）
+WEIGHTS="${WEIGHTS:-$ROOT/vision_yolo_train/runs/wersion_parts/weights/best_v2.pt}"
 # 阶段模型（可选）：类别 step_0..step_3/complete；只采信装配区里的框
 STAGE_WEIGHTS="${STAGE_WEIGHTS:-$ROOT/vision_yolo_train/runs/steps_stage_best.pt}"
 STAGE_ZONE="${STAGE_ZONE:-60 62 344 344}"
