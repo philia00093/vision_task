@@ -649,9 +649,15 @@ def main():
                             bx1, by1, bx2, by2 = det["box"]
                             cx_, cy_ = (bx1 + bx2) / 2, (by1 + by2) / 2
                             if ax <= cx_ <= ax + aw and ay <= cy_ <= ay + ah:
-                                target = det
+                                # 用检测框尺寸，但**以装配台中心对齐**：ROI 中心必须
+                                # 正好是转轴，否则算出来的角度会跟着摆动
+                                half = max(bx2 - bx1, by2 - by1) * 0.5 / args.screw_roi_ratio
+                                tcx, tcy = ax + aw / 2, ay + ah / 2
+                                target = {"box": (tcx - half, tcy - half,
+                                                  tcx + half, tcy + half)}
                                 break
                         if target is None:
+                            # 兜底：以**装配台中心**为质心裁一个 1:1 方框（ROI 中心=转轴）
                             side = int(min(aw, ah) * args.screw_roi_ratio)
                             cx_, cy_ = ax + aw // 2, ay + ah // 2
                             target = {"box": (cx_ - side // 2, cy_ - side // 2,

@@ -238,6 +238,38 @@ def polar_rotation(prev_gray, cur_gray, center=None, angle_bins: int = 360,
     return shift * (360.0 / angle_bins), conf
 
 
+def find_eccentric_point(gray, center=None, inner: float = 0.18, outer: float = 0.95):
+    """找"偏心点"：以 center 为圆心、在半径环内**梯度幅值 × 半径**最大的点。
+
+    偏心杆头离轴心远、边缘又强，所以这个点在转动时一直跟着杆头走；
+    角度就用它和固定中心(装配台中心)的连线来算，不涉及任何拟合。
+    """
+    if gray is None or gray.size == 0:
+        return None
+    height, width = gray.shape[:2]
+    cx, cy = (width * 0.5, height * 0.5) if center is None else center
+    limit = min(width, height) * 0.5
+    gx = cv2.Sobel(gray.astype(np.float32), cv2.CV_32F, 1, 0, ksize=3)
+    gy = cv2.Sobel(gray.astype(np.float32), cv2.CV_32F, 0, 1, ksize=3)
+    mag = cv2.magnitude(gx, gy)
+    mag = cv2.GaussianBlur(mag, (5, 5), 0)
+    yy, xx = np.mgrid[0:height, 0:width]
+    radius = np.hypot(xx - cx, yy - cy)
+    score = mag * radius
+    score[radius < inner * limit] = 0
+    score[radius > outer * limit] = 0
+    peak = float(score.max())
+    if peak < 20.0:
+        return None
+    # 峰值要明显高于环内的平均水平，否则说明这一帧根本没有"突出的偏心结构"
+    ring = score[score > 0]
+    if ring.size == 0:
+        return None
+    ratio = peak / (float(np.median(ring)) + 1e-6)
+    y, x = np.unravel_index(int(np.argmax(score)), score.shape)
+    return float(x), float(y), ratio
+
+
 def find_two_ends(prev_gray, cur_gray, min_frac: float = 0.2):
     """从帧间差里找杆的**两端**：先取动得最多的点，再取它正对面动得第二多的点。
 
@@ -379,6 +411,8 @@ class ScrewTurns:
         self._tip2 = None                       # 杆的另一端（B）
         self.center = None                      # 实测出来的转轴（拟合圆圆心）
         self._path: list = []                   # 顶点轨迹（用来拟合圆心）
+        self._radius = None                     # 偏心点到轴心的半径（应基本恒定）
+        self._tip_prev = None                   # 上一帧偏心点（算切向/径向位移）
         self._dir = 0                           # 旋转方向锁（+1/-1，0=还没定）
         self._signed = 0.0                      # 带符号累计（只用来定方向）
         self.motion_conf = 0.0
@@ -407,6 +441,8 @@ class ScrewTurns:
         self._tip = None
         self._tip2 = None
         self._path = []
+        self._radius = None
+        self._tip_prev = None
         self.center = None
         self._dir = 0
         self._signed = 0.0
@@ -452,17 +488,63 @@ class ScrewTurns:
                 self.last_move = now
             return
 
-        # ② 没色标：**极坐标相位相关**（旋转 → 角度轴平移，用全部像素）
+        # ② 没色标：**偏心点 + 固定中心（装配台中心）**
+        #    角度 = atan2(偏心点 - 装配台中心)。中心是固定的、外圈给的，不拟合、不猜。
         gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY) if roi.ndim == 3 else roi
-        self._prev_gray_size = gray.shape[:2]
-        delta, conf = polar_rotation(self._prev_gray, gray)
+        height, width = gray.shape[:2]
+        # ROI 是围绕装配台中心裁的 1:1 方框，所以中心就是 ROI 中心
+        cx, cy = width * 0.5, height * 0.5
+        limit = min(width, height) * 0.5
+        # 每帧直接重新找偏心点（几何检测：边缘强度×半径最大处）。
+        # 不用光流跟：杆一转，它的局部外观就变了，LK 会漂、会丢，丢了就得重定基准，
+        # 结果就是"跟一帧丢两帧"→圈数严重偏少（实测 5 圈只算出 1 圈）。
+        found = find_eccentric_point(gray, (cx, cy))
         self._prev_gray = gray
-        self.conf = conf
-        if delta is None or conf < 0.08:
+        if found is None:
             self.lost += 1
             return
+        tip_x, tip_y, ratio = found
+        tip = (tip_x, tip_y)
+        # 偏心点的"突出程度"不够 → 这一帧不算（噪声画面峰值不明显）
+        if ratio < 2.5:
+            self.lost += 1
+            return
+        self._tip = tip
         self.lost = 0
-        self.angle = float(delta)
+        radius = math.hypot(tip[0] - cx, tip[1] - cy)
+        if radius < 0.12 * limit:
+            return
+        # 半径必须稳定（偏心点在一个固定半径的圆上转）：
+        # 噪声会让检测点乱跳，半径一抖就不算，这一步把"静止乱涨"挡掉
+        if self._radius is None:
+            self._radius = radius
+        elif abs(radius - self._radius) / self._radius > 0.22:
+            self.lost += 1
+            return
+        else:
+            self._radius = 0.8 * self._radius + 0.2 * radius
+        angle = math.degrees(math.atan2(tip[1] - cy, tip[0] - cx))
+        self.angle = angle
+        self.conf = 1.0
+        self.center = (cx, cy)
+        if self._last_angle is None:
+            self._last_angle = angle
+            return
+        # 位移分解：转动是**切向**的，噪声抖动是全方向的。
+        # 要求切向位移够大、而且明显大于径向位移，否则这一帧不算。
+        if self._tip_prev is not None:
+            dx = tip[0] - self._tip_prev[0]
+            dy = tip[1] - self._tip_prev[1]
+            ux, uy = (tip[0] - cx) / max(radius, 1e-6), (tip[1] - cy) / max(radius, 1e-6)
+            tangential = abs(dx * (-uy) + dy * ux)      # 切向分量
+            radial = abs(dx * ux + dy * uy)             # 径向分量
+            if tangential < 1.2 or tangential < 1.5 * radial:
+                self._tip_prev = tip
+                self._last_angle = angle
+                return
+        self._tip_prev = tip
+        delta = (angle - self._last_angle + 180.0) % 360.0 - 180.0
+        self._last_angle = angle
         if abs(delta) > self.max_step_deg:
             return
         if abs(delta) < DEFAULT_MIN_MOVE_DEG:
