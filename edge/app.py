@@ -645,11 +645,23 @@ def main():
                         rx, ry, rw, rh = args.screw_roi
                         target = {"box": (rx, ry, rx + rw, ry + rh)}
                     elif region is not None:
+                        # 优先用**装配区里的 base 框**：杆就拧在盘上，这块平均只有 110px，
+                        # 里面几乎只有杆在动 —— 整个装配区做 ROI 会被静止的托盘稀释，
+                        # 实测整区置信度只有 1.15，转起来也测不到。
                         ax, ay, aw, ah = region
-                        side = int(min(aw, ah) * args.screw_roi_ratio)
-                        cx_, cy_ = ax + aw // 2, ay + ah // 2
-                        target = {"box": (cx_ - side // 2, cy_ - side // 2,
-                                          cx_ + side // 2, cy_ + side // 2)}
+                        for det in detections:
+                            if det["name"] not in ("base", "support"):
+                                continue
+                            bx1, by1, bx2, by2 = det["box"]
+                            cx_, cy_ = (bx1 + bx2) / 2, (by1 + by2) / 2
+                            if ax <= cx_ <= ax + aw and ay <= cy_ <= ay + ah:
+                                target = det
+                                break
+                        if target is None:
+                            side = int(min(aw, ah) * args.screw_roi_ratio)
+                            cx_, cy_ = ax + aw // 2, ay + ah // 2
+                            target = {"box": (cx_ - side // 2, cy_ - side // 2,
+                                              cx_ + side // 2, cy_ + side // 2)}
                     if target is not None:
                         sx1, sy1, sx2, sy2 = target["box"]
                         pad = int(max(sx2 - sx1, sy2 - sy1) * 0.15)
