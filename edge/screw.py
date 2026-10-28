@@ -197,41 +197,57 @@ def find_tip_by_motion(prev_gray, cur_gray, center=None, min_frac: float = 0.25)
 
 
 def polar_rotation(prev_gray, cur_gray, center=None, angle_bins: int = 360,
-                   radius_bins: int = 64):
-    """极坐标 + 循环相位相关测旋转。
+                   radius_bins: int = 64, inner_frac: float = 0.08,
+                   outer_frac: float = 0.45, use_gradient: bool = True):
+    """**中心圆圈**内的极坐标循环相位相关（测旋转）。
 
-    **OpenCV 的 warpPolar 约定**（实测确认，别猜）：dsize=(宽,高) 里
-    **行 = 角度**、**列 = 半径**。所以：
-    · 绕轴转 φ 度 = 极坐标图沿"行"方向循环平移 φ*(angle_bins/360) 行
-    · 每个角度行先减掉自己的均值（去掉铜盘这种沿半径恒定的成分），
-      剩下的就是"杆在哪个角度"的信号
-    · 用 FFT 做**循环**相关（角度轴首尾相接，线性相关会把环绕算错）
+    相比整块 ROI：
+    · 只在中心这个圆里算（inner/outer 是相对 ROI 半宽的比例），
+      把铜盘外沿、托盘、手都排除在外 —— 那些都是静止的，会把信号稀释掉
+    · 先转成**梯度幅值图**再做极坐标：盘面平滑的亮度（反光、颜色）被压掉，
+      只剩杆的边缘，转动信号更突出
+    · 角度轴用 FFT 做**循环**相关（首尾相接，线性相关会把环绕算错）
+
+    返回 (旋转角°, 置信度)。
     """
     if prev_gray is None or cur_gray is None or cur_gray.size == 0:
         return None, 0.0
     height, width = cur_gray.shape[:2]
     cx, cy = (width * 0.5, height * 0.5) if center is None else center
-    max_radius = 0.49 * min(width, height)
-    size = (radius_bins, angle_bins)
+    limit = min(width, height) * 0.5
+
+    def prep(img):
+        gray = img.astype(np.float32)
+        if use_gradient:
+            gray = cv2.GaussianBlur(gray, (5, 5), 0)
+            gx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
+            gy = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
+            gray = cv2.magnitude(gx, gy)
+        else:
+            gray = cv2.GaussianBlur(gray, (5, 5), 0)
+        return cv2.warpPolar(gray, (radius_bins, angle_bins), (float(cx), float(cy)),
+                             float(limit), cv2.WARP_POLAR_LINEAR)
+
     try:
-        pa = cv2.warpPolar(prev_gray.astype(np.float32), size, (float(cx), float(cy)),
-                           float(max_radius), cv2.WARP_POLAR_LINEAR)
-        pb = cv2.warpPolar(cur_gray.astype(np.float32), size, (float(cx), float(cy)),
-                           float(max_radius), cv2.WARP_POLAR_LINEAR)
+        pa = prep(prev_gray)
+        pb = prep(cur_gray)
     except Exception:
         return None, 0.0
-    lo, hi = int(radius_bins * 0.20), int(radius_bins * 0.85)
+    lo = max(1, int(radius_bins * inner_frac))
+    hi = max(lo + 2, int(radius_bins * outer_frac))
     pa = pa[:, lo:hi]
     pb = pb[:, lo:hi]
     pa = pa - pa.mean(axis=1, keepdims=True)
     pb = pb - pb.mean(axis=1, keepdims=True)
+    if float(np.abs(pa).max()) < 1e-6 or float(np.abs(pb).max()) < 1e-6:
+        return None, 0.0
     fa = np.fft.fft2(pa)
     fb = np.fft.fft2(pb)
     cross = fa * np.conj(fb)
     denom = np.abs(cross)
     denom[denom < 1e-9] = 1e-9
     corr = np.abs(np.fft.ifft2(cross / denom))
-    profile = corr.mean(axis=1)                 # 沿半径列平均 → 每个"行位移"的能量
+    profile = corr.mean(axis=1)
     peak = int(np.argmax(profile))
     conf = float(profile[peak] / (profile.mean() + 1e-9))
     shift = peak if peak <= angle_bins // 2 else peak - angle_bins
@@ -437,6 +453,7 @@ class ScrewTurns:
         self._signed = 0.0                      # 带符号累计（只用来定方向）
         self.motion_conf = 0.0
         self.state = IDLE
+        self.confirmed = False
         self.turns = 0.0
         self.angle = None
         self.conf = 0.0
@@ -617,6 +634,16 @@ class ScrewTurns:
         self.turns = self._accum / 360.0
         self.last_move = now
 
+    def confirm_done(self) -> None:
+        """确认式：不数圈，操作员按第二下就代表"这一步做完了"。
+
+        为什么留这个模式：实测这根杆在画面里**根本不转**（80 组帧对的相关角全是 0），
+        从俯视相机数圈数不可行。先把流程跑通，等加标记/传感器再换成计数模式。
+        """
+        self.state = OK
+        self.turns = 0.0
+        self.confirmed = True
+
     def finish(self, now: float | None = None) -> None:
         """外部要求结束（第二次按按钮）：立刻结算圈数并判合格/不合格。"""
         self._finish(now)
@@ -629,6 +656,8 @@ class ScrewTurns:
         self.state = OK if self.turns >= self.min_turns else NG
 
     def describe(self) -> str:
+        if getattr(self, "confirmed", False) and self.state == OK:
+            return "支撑杆 已确认完成"
         if self.state == RUNNING:
             return f"支撑杆 {self.turns:.2f} 圈（目标 ≥{self.min_turns:g}）"
         if self.state == OK:

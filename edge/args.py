@@ -172,6 +172,9 @@ DETECT_ARGUMENTS = (
     (("--no-touch",), dict(action="store_true", help="不读触摸屏（按钮照画，但点不了）")),
     (("--touch-dev",), dict(default="/dev/input/event0",
                             help="触摸屏事件设备（树莓派上一般是 /dev/input/event0）")),
+    (("--screw-mode",), dict(choices=("confirm", "count"), default="confirm",
+                             help="支撑杆判定方式：confirm=按按钮确认完成（默认，实测杆不转）；"
+                                  "count=按圈数判定（需要杆在画面里可见地转）")),
     (("--screw-min-turns",), dict(type=float, default=4.5,
                                   help="支撑杆至少要拧多少圈才算合格（默认 4.5）")),
     (("--screw-max-turns",), dict(type=float, default=5.0,
