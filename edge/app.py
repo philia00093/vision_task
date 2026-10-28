@@ -624,127 +624,145 @@ def main():
                                     screw_roi_lock = None       # 本次会话的固定 ROI
                                     print("[螺丝] 开始装配支撑杆：统计圈数，目标 ≥ "
                                           f"{screw.min_turns:g} 圈", flush=True)
-                    if screw is not None and screw.running:
-                        # ROI 选择顺序（这是之前圈数一直 0 的根因：support 常常检不到）：
-                        #   ① 命令行固定的 --screw-roi
-                        #   ② 装配区里的 base（杆是拧在盘上的，盘框稳定得多）
-                        #   ③ support 框
-                        # 默认只用**装配区中心**那一块：杆就拧在那里，位置固定，
-                        # 不依赖任何检测框（实测 support 经常检不到，框一丢圈数就停）。
-                        target = None
-                        # 会话开始后 ROI **定死**：检测框每帧都抖，ROI 跟着抖会被当成"转动"，
-                        # 这正是"有时候准有时候不准"的原因。第一次算出来就锁住。
-                        if screw_roi_lock is not None:
-                            target = {"box": screw_roi_lock}
-                        elif args.screw_roi:
-                            rx, ry, rw, rh = args.screw_roi
-                            target = {"box": (rx, ry, rx + rw, ry + rh)}
-                        elif region is not None:
-                            # 优先用**装配区里的 base 框**：杆就拧在盘上，这块平均只有 110px，
-                            # 里面几乎只有杆在动 —— 整个装配区做 ROI 会被静止的托盘稀释，
-                            # 实测整区置信度只有 1.15，转起来也测不到。
-                            ax, ay, aw, ah = region
-                            for det in detections:
-                                if det["name"] not in ("base", "support"):
-                                    continue
-                                bx1, by1, bx2, by2 = det["box"]
-                                cx_, cy_ = (bx1 + bx2) / 2, (by1 + by2) / 2
-                                if ax <= cx_ <= ax + aw and ay <= cy_ <= ay + ah:
-                                    # 用检测框尺寸，但**以装配台中心对齐**：ROI 中心必须
-                                    # 正好是转轴，否则算出来的角度会跟着摆动
-                                    half = max(bx2 - bx1, by2 - by1) * 0.5 / args.screw_roi_ratio
-                                    tcx, tcy = ax + aw / 2, ay + ah / 2
-                                    target = {"box": (tcx - half, tcy - half,
-                                                      tcx + half, tcy + half)}
-                                    break
-                            if target is None:
-                                # 兜底：以**装配台中心**为质心裁一个 1:1 方框（ROI 中心=转轴）
-                                side = int(min(aw, ah) * args.screw_roi_ratio)
-                                cx_, cy_ = ax + aw // 2, ay + ah // 2
-                                target = {"box": (cx_ - side // 2, cy_ - side // 2,
-                                                  cx_ + side // 2, cy_ + side // 2)}
-                        if target is not None and screw_roi_lock is None:
-                            screw_roi_lock = tuple(target["box"])
-                        if target is not None:
-                            sx1, sy1, sx2, sy2 = target["box"]
-                            pad = int(max(sx2 - sx1, sy2 - sy1) * 0.15)
-                            roi = view[max(0, int(sy1) - pad):int(sy2) + pad,
-                                       max(0, int(sx1) - pad):int(sx2) + pad]
-                            before = screw.state
-                            screw.update(roi)
-                            # 每 0.5 秒打一行诊断：这一帧转了多少、置信度多少、累计多少
-                            if now_stage - getattr(args, "_dbg", 0) > 0.5:
-                                try:
-                                    args._dbg = now_stage
-                                except Exception:
-                                    pass
-                                delta_now = screw.angle if screw.angle is not None else 0.0
-                                tip = getattr(screw, "_tip", None)
-                                center = getattr(screw, "center", None)
-                                tip_txt = (f"tip({tip[0]:.0f},{tip[1]:.0f})" if tip else "tip(-)")
-                                c_txt = (f"c({center[0]:.0f},{center[1]:.0f})" if center else "c(roi)")
-                                print(f"[螺丝] {tip_txt} {c_txt} Δ{delta_now:+.1f}° "
-                                      f"turns {screw.turns:.2f}", flush=True)
-                            if screw.state != before and screw.state in (OK, NG):
-                                print(f"[螺丝] 停手：{screw.describe()}", flush=True)
-                    # ---- 缺陷识别 1：compass 面积（偏导 → 轮廓 → 面积 → 和基准比）----
-                    # 阶段到 step0 就说明**已经开始装配**了：来料完整性检测到此为止，
-                    # 不再量面积、也不在屏上显示判定（零件已经装进去了，再判没意义）
-                    assembly_started = bool(
-                        stage_result is not None
-                        and str(stage_result.get("label", "")).startswith("step"))
-                    # 手在画面里 = 正在拿/放：手会挡住零件，量出来必然偏小（实测 -9.7% 误判），
-                    # 所以有手就整帧跳过，不量也不显示。
-                    hand_present = bool(tracker_parts is not None
-                                        and tracker_parts.runner.remote is not None
-                                        and tracker_parts.runner.remote.hand)
-                    if hand_present or assembly_started:
+                    # 把"盘心/杆心"喂给计转（只在装配区里找；region 可能还没算，自己取一次）
+                if screw is not None:
+                    screw.pivot = screw.rod_point = None
+                    zone_rect = (tuple(args.stage_region) if args.stage_region
+                                 else tracker_zones.region("装配区"))
+                    if zone_rect is not None:
+                        ax_, ay_, aw_, ah_ = zone_rect
+                        for det in detections:
+                            if det.get("predicted"):
+                                continue
+                            bx1, by1, bx2, by2 = det["box"]
+                            cx_, cy_ = (bx1 + bx2) * 0.5, (by1 + by2) * 0.5
+                            if not (ax_ <= cx_ <= ax_ + aw_ and ay_ <= cy_ <= ay_ + ah_):
+                                continue
+                            if det["name"] == "base" and screw.pivot is None:
+                                screw.pivot = (cx_, cy_)
+                            elif det["name"] == "support":
+                                screw.rod_point = (cx_, cy_)
+                if screw is not None and screw.running:
+                    # ROI 选择顺序（这是之前圈数一直 0 的根因：support 常常检不到）：
+                    #   ① 命令行固定的 --screw-roi
+                    #   ② 装配区里的 base（杆是拧在盘上的，盘框稳定得多）
+                    #   ③ support 框
+                    # 默认只用**装配区中心**那一块：杆就拧在那里，位置固定，
+                    # 不依赖任何检测框（实测 support 经常检不到，框一丢圈数就停）。
+                    target = None
+                    # 会话开始后 ROI **定死**：检测框每帧都抖，ROI 跟着抖会被当成"转动"，
+                    # 这正是"有时候准有时候不准"的原因。第一次算出来就锁住。
+                    if screw_roi_lock is not None:
+                        target = {"box": screw_roi_lock}
+                    elif args.screw_roi:
+                        rx, ry, rw, rh = args.screw_roi
+                        target = {"box": (rx, ry, rx + rw, ry + rh)}
+                    elif region is not None:
+                        # 优先用**装配区里的 base 框**：杆就拧在盘上，这块平均只有 110px，
+                        # 里面几乎只有杆在动 —— 整个装配区做 ROI 会被静止的托盘稀释，
+                        # 实测整区置信度只有 1.15，转起来也测不到。
+                        ax, ay, aw, ah = region
+                        for det in detections:
+                            if det["name"] not in ("base", "support"):
+                                continue
+                            bx1, by1, bx2, by2 = det["box"]
+                            cx_, cy_ = (bx1 + bx2) / 2, (by1 + by2) / 2
+                            if ax <= cx_ <= ax + aw and ay <= cy_ <= ay + ah:
+                                # 用检测框尺寸，但**以装配台中心对齐**：ROI 中心必须
+                                # 正好是转轴，否则算出来的角度会跟着摆动
+                                half = max(bx2 - bx1, by2 - by1) * 0.5 / args.screw_roi_ratio
+                                tcx, tcy = ax + aw / 2, ay + ah / 2
+                                target = {"box": (tcx - half, tcy - half,
+                                                  tcx + half, tcy + half)}
+                                break
+                        if target is None:
+                            # 兜底：以**装配台中心**为质心裁一个 1:1 方框（ROI 中心=转轴）
+                            side = int(min(aw, ah) * args.screw_roi_ratio)
+                            cx_, cy_ = ax + aw // 2, ay + ah // 2
+                            target = {"box": (cx_ - side // 2, cy_ - side // 2,
+                                              cx_ + side // 2, cy_ + side // 2)}
+                    if target is not None and screw_roi_lock is None:
+                        screw_roi_lock = tuple(target["box"])
+                    if target is not None:
+                        sx1, sy1, sx2, sy2 = target["box"]
+                        pad = int(max(sx2 - sx1, sy2 - sy1) * 0.15)
+                        roi = view[max(0, int(sy1) - pad):int(sy2) + pad,
+                                   max(0, int(sx1) - pad):int(sx2) + pad]
+                        before = screw.state
+                        screw.update(roi)
+                        # 每 0.5 秒打一行诊断：这一帧转了多少、置信度多少、累计多少
+                        if now_stage - getattr(args, "_dbg", 0) > 0.5:
+                            try:
+                                args._dbg = now_stage
+                            except Exception:
+                                pass
+                            delta_now = screw.angle if screw.angle is not None else 0.0
+                            tip = getattr(screw, "_tip", None)
+                            center = getattr(screw, "center", None)
+                            tip_txt = (f"tip({tip[0]:.0f},{tip[1]:.0f})" if tip else "tip(-)")
+                            c_txt = (f"c({center[0]:.0f},{center[1]:.0f})" if center else "c(roi)")
+                            print(f"[螺丝] {tip_txt} {c_txt} Δ{delta_now:+.1f}° "
+                                  f"turns {screw.turns:.2f}", flush=True)
+                        if screw.state != before and screw.state in (OK, NG):
+                            print(f"[螺丝] 停手：{screw.describe()}", flush=True)
+                # ---- 缺陷识别 1：compass 面积（偏导 → 轮廓 → 面积 → 和基准比）----
+                # 阶段到 step0 就说明**已经开始装配**了：来料完整性检测到此为止，
+                # 不再量面积、也不在屏上显示判定（零件已经装进去了，再判没意义）
+                assembly_started = bool(
+                    stage_result is not None
+                    and str(stage_result.get("label", "")).startswith("step"))
+                # 手在画面里 = 正在拿/放：手会挡住零件，量出来必然偏小（实测 -9.7% 误判），
+                # 所以有手就整帧跳过，不量也不显示。
+                hand_present = bool(tracker_parts is not None
+                                    and tracker_parts.runner.remote is not None
+                                    and tracker_parts.runner.remote.hand)
+                if hand_present or assembly_started:
+                    area_visible = False
+                if (area_check is not None and submitted_now and last_source is not None
+                        and not assembly_started and not hand_present):
+                    target = next((d for d in detections
+                                   if d["name"] == "compass" and not d.get("predicted")), None)
+                    if target is not None:
+                        # 框是 view 坐标，先换回"模型看到的那张裁剪图"的坐标再量：
+                        # 同一分辨率下量出来的面积才稳（全分辨率 view 上互换两个峰，CV 2%）
+                        ox, oy = last_offset
+                        bx1, by1, bx2, by2 = target["box"]
+                        box_crop = ((bx1 - ox) / last_scale, (by1 - oy) / last_scale,
+                                    (bx2 - ox) / last_scale, (by2 - oy) / last_scale)
+                        # 检测框只当"搜索窗"，边框和面积都由偏导找出来的零件轮廓决定
+                        # （实测框抖 ±5px，轮廓面积只变 0.46%；直接拿框裁会变 7%）
+                        part = find_part(last_source, box_crop, search=args.part_search)
                         area_visible = False
-                    if (area_check is not None and submitted_now and last_source is not None
-                            and not assembly_started and not hand_present):
-                        target = next((d for d in detections
-                                       if d["name"] == "compass" and not d.get("predicted")), None)
-                        if target is not None:
-                            # 框是 view 坐标，先换回"模型看到的那张裁剪图"的坐标再量：
-                            # 同一分辨率下量出来的面积才稳（全分辨率 view 上互换两个峰，CV 2%）
-                            ox, oy = last_offset
-                            bx1, by1, bx2, by2 = target["box"]
-                            box_crop = ((bx1 - ox) / last_scale, (by1 - oy) / last_scale,
-                                        (bx2 - ox) / last_scale, (by2 - oy) / last_scale)
-                            # 检测框只当"搜索窗"，边框和面积都由偏导找出来的零件轮廓决定
-                            # （实测框抖 ±5px，轮廓面积只变 0.46%；直接拿框裁会变 7%）
-                            part = find_part(last_source, box_crop, search=args.part_search)
-                            area_visible = False
-                            if part is not None:
-                                # 只在零件摆到"标定位置 ±10%"时才判、才显示；
-                                # 拿在手上/路过画面的那些帧既不量也不显示。
-                                in_pos = area_check.check_position(part["center"],
-                                                                   last_source.shape)
-                                if in_pos is False:
-                                    part = None
-                            if part is not None:
-                                was_ok = area_check.ok
-                                area_check.push(part["area"])
-                                area_visible = True
-                                if (area_check.calibrated and area_check.ok != was_ok
-                                        and area_check.judged > 0):
-                                    tag = "合格" if area_check.ok else "不合格"
-                                    print(f"[缺陷] compass 轮廓面积 {area_check.area:.0f}"
-                                          f"（基准 {area_check.ref:.0f}，"
-                                          f"误差 {area_check.ratio*100:+.1f}%）→ {tag}", flush=True)
-                    # 每一帧都入队（包括因为窗口满被背压丢掉、没发给电脑的那些）。
-                    # 之前只存"发出去的帧"，链路一旦掉速，队列就被抽干 → 水位不足 → 画面卡住。
-                    if sync_display:
-                        play_seq += 1
-                        if True:
-                            now_t = frame_stamp or time.time()
-                            sync_ring[play_seq] = (view.copy(), detections, now_t)
-                            # 按时间淘汰（留够覆盖 RTT 的历史），再按帧数兜底防爆内存
-                            limit = now_t - max(args.sync_seconds, 0.2)
-                            while sync_ring and next(iter(sync_ring.values()))[2] < limit:
-                                sync_ring.popitem(last=False)
-                            while len(sync_ring) > max(args.sync_max_frames, 4):
-                                sync_ring.popitem(last=False)
+                        if part is not None:
+                            # 只在零件摆到"标定位置 ±10%"时才判、才显示；
+                            # 拿在手上/路过画面的那些帧既不量也不显示。
+                            in_pos = area_check.check_position(part["center"],
+                                                               last_source.shape)
+                            if in_pos is False:
+                                part = None
+                        if part is not None:
+                            was_ok = area_check.ok
+                            area_check.push(part["area"])
+                            area_visible = True
+                            if (area_check.calibrated and area_check.ok != was_ok
+                                    and area_check.judged > 0):
+                                tag = "合格" if area_check.ok else "不合格"
+                                print(f"[缺陷] compass 轮廓面积 {area_check.area:.0f}"
+                                      f"（基准 {area_check.ref:.0f}，"
+                                      f"误差 {area_check.ratio*100:+.1f}%）→ {tag}", flush=True)
+                # 每一帧都入队（包括因为窗口满被背压丢掉、没发给电脑的那些）。
+                # 之前只存"发出去的帧"，链路一旦掉速，队列就被抽干 → 水位不足 → 画面卡住。
+                if sync_display:
+                    play_seq += 1
+                    if True:
+                        now_t = frame_stamp or time.time()
+                        sync_ring[play_seq] = (view.copy(), detections, now_t)
+                        # 按时间淘汰（留够覆盖 RTT 的历史），再按帧数兜底防爆内存
+                        limit = now_t - max(args.sync_seconds, 0.2)
+                        while sync_ring and next(iter(sync_ring.values()))[2] < limit:
+                            sync_ring.popitem(last=False)
+                        while len(sync_ring) > max(args.sync_max_frames, 4):
+                            sync_ring.popitem(last=False)
 
                 # ---------------- 阶段：每 --stage-period 秒认一次「装配区」 ----------------
                 # 只裁装配区那一块图，跟零件框无关；用时间而不是帧数当间隔，
