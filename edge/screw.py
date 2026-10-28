@@ -149,6 +149,31 @@ def motion_angle(prev_gray, cur_gray, center=None,
     return angle, conf, energy
 
 
+def fit_circle(points):
+    """最小二乘拟合圆（Kasa 代数解）：返回 (cx, cy, r, 残差)。
+
+    顶点绕轴心画圆，所以**用轨迹点自己反推轴心**，比拿 ROI 框中心当轴心准得多。
+    拿错轴心时角度会来回摆，累计圈数就飘。
+    """
+    if len(points) < 8:
+        return None
+    pts = np.asarray(points, dtype=np.float64)
+    x, y = pts[:, 0], pts[:, 1]
+    A = np.column_stack([x, y, np.ones(len(x))])
+    b = -(x * x + y * y)
+    try:
+        (D, E, F), *_ = np.linalg.lstsq(A, b, rcond=None)
+    except np.linalg.LinAlgError:
+        return None
+    cx, cy = -D / 2.0, -E / 2.0
+    value = cx * cx + cy * cy - F
+    if value <= 0:
+        return None
+    radius = math.sqrt(value)
+    residual = float(np.mean(np.abs(np.hypot(x - cx, y - cy) - radius)))
+    return cx, cy, radius, residual
+
+
 def find_tip_by_motion(prev_gray, cur_gray, center=None, min_frac: float = 0.25):
     """从帧间差里找"动得最厉害、且离轴心足够远"的那个点 = 偏心杆的顶点。
 
@@ -275,6 +300,8 @@ class ScrewTurns:
         self.mode = "marker" if marker_hsv else "motion"
         self._prev_gray = None                  # 上一帧 ROI 灰度
         self._tip = None                        # 正在跟的顶点（偏心杆头）
+        self.center = None                      # 实测出来的转轴（拟合圆圆心）
+        self._path: list = []                   # 顶点轨迹（用来拟合圆心）
         self._dir = 0                           # 旋转方向锁（+1/-1，0=还没定）
         self._signed = 0.0                      # 带符号累计（只用来定方向）
         self.motion_conf = 0.0
@@ -301,6 +328,8 @@ class ScrewTurns:
         self._last_hist = None
         self._prev_gray = None
         self._tip = None
+        self._path = []
+        self.center = None
         self._dir = 0
         self._signed = 0.0
         self.started_at = time.time() if now is None else now
@@ -351,7 +380,11 @@ class ScrewTurns:
         #    现在只维护一个点，噪声完全可控。
         gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY) if roi.ndim == 3 else roi
         height, width = gray.shape[:2]
-        cx, cy = width * 0.5, height * 0.5
+        # 转轴：优先用轨迹拟合出来的圆心，没有就用 ROI 中心（后面会自己修正）
+        if self.center is not None:
+            cx, cy = self.center
+        else:
+            cx, cy = width * 0.5, height * 0.5
         limit = min(width, height) * 0.5
         tip = None
         if self._tip is not None:
@@ -375,6 +408,21 @@ class ScrewTurns:
                     else math.hypot(tip[0] - self._tip[0], tip[1] - self._tip[1]))
         self._tip = tip
         self.lost = 0
+        # 记录轨迹 → 够了就拟合一次圆心（拟合成功且残差小才采用）
+        self._path.append(tip)
+        if len(self._path) > 60:
+            del self._path[:len(self._path) - 60]
+        if len(self._path) >= 12 and len(self._path) % 4 == 0:
+            fitted = fit_circle(self._path)
+            if fitted is not None:
+                fcx, fcy, fr, fres = fitted
+                if fres < 3.0 and fr > 0.12 * limit:
+                    self.center = (fcx, fcy)
+                    if self._last_angle is not None:
+                        # 换轴心后角度基准跟着改，避免一次跳变被算成转动
+                        self._last_angle = math.degrees(
+                            math.atan2(tip[1] - fcy, tip[0] - fcx))
+                    cx, cy = self.center
         radius = math.hypot(tip[0] - cx, tip[1] - cy)
         if radius < 0.15 * limit:                    # 太靠轴心，角度不准
             return

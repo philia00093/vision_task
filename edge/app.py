@@ -672,7 +672,11 @@ def main():
                             except Exception:
                                 pass
                             delta_now = screw.angle if screw.angle is not None else 0.0
-                            print(f"[螺丝] Δ{delta_now:+.1f}° conf {screw.conf:.2f} "
+                            tip = getattr(screw, "_tip", None)
+                            center = getattr(screw, "center", None)
+                            tip_txt = (f"tip({tip[0]:.0f},{tip[1]:.0f})" if tip else "tip(-)")
+                            c_txt = (f"c({center[0]:.0f},{center[1]:.0f})" if center else "c(roi)")
+                            print(f"[螺丝] {tip_txt} {c_txt} Δ{delta_now:+.1f}° "
                                   f"turns {screw.turns:.2f}", flush=True)
                         if screw.state != before and screw.state in (OK, NG):
                             print(f"[螺丝] 停手：{screw.describe()}", flush=True)
