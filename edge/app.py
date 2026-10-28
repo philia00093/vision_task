@@ -642,7 +642,10 @@ def main():
                                 screw.pivot = (cx_, cy_)
                             elif det["name"] == "support":
                                 screw.rod_point = (cx_, cy_)
-                if screw is not None and screw.running:
+                # 计转交给手部关键点：手掌方向跟着手转，比找杆/框心稳
+                if screw is not None and screw.running and hands_kp:
+                    screw.update_hand(hands_kp[0], now=now_stage)
+                if False and screw is not None and screw.running:
                     # ROI 选择顺序（这是之前圈数一直 0 的根因：support 常常检不到）：
                     #   ① 命令行固定的 --screw-roi
                     #   ② 装配区里的 base（杆是拧在盘上的，盘框稳定得多）

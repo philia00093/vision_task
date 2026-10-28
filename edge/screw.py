@@ -238,6 +238,24 @@ def polar_rotation(prev_gray, cur_gray, center=None, angle_bins: int = 360,
     return shift * (360.0 / angle_bins), conf
 
 
+def hand_angle(points):
+    """用 21 个手部关键点求"手掌方向"：手腕(0) → 中指根(9) 的连线角度。
+
+    为什么用这条线：手指会张合、指尖抖，但**手腕到中指根这一段是刚性的**，
+    它跟着手一起转。握着杆/螺丝刀拧的时候，手掌方向就是转动方向。
+    """
+    if not points or len(points) < 10:
+        return None
+    try:
+        x0, y0 = points[0][0], points[0][1]
+        x1, y1 = points[9][0], points[9][1]
+    except (TypeError, IndexError):
+        return None
+    if math.hypot(x1 - x0, y1 - y0) < 8.0:      # 手掌长得太短，不可信
+        return None
+    return math.degrees(math.atan2(y1 - y0, x1 - x0))
+
+
 def find_eccentric_point(gray, center=None, inner: float = 0.18, outer: float = 0.95):
     """找"偏心点"：以 center 为圆心、在半径环内**梯度幅值 × 半径**最大的点。
 
@@ -561,6 +579,43 @@ class ScrewTurns:
             self.last_move = now
         # 不再"停手自动结束"：实测拧的时候和停下来在画面上差别不大，
         # 自动判停会误结算（刚按下就结束）。现在只认按钮：第二次按才结算。
+
+    def update_hand(self, points, now: float | None = None) -> None:
+        """用**手部关键点**推进计转：手掌方向变化 = 这一帧转过的角度。
+
+        比"找杆的偏心点/框心"稳得多：手部 21 点是神经网络给的，遮挡、光照都不太影响，
+        而且手一转，手腕→中指根这条线跟着转，方向清楚。
+        """
+        now = time.time() if now is None else now
+        if self.state != RUNNING:
+            return
+        angle = hand_angle(points)
+        if angle is None:
+            self.lost += 1
+            return
+        self.lost = 0
+        self.angle = angle
+        self.conf = 1.0
+        if self._last_angle is None:
+            self._last_angle = angle
+            return
+        delta = (angle - self._last_angle + 180.0) % 360.0 - 180.0
+        self._last_angle = angle
+        if abs(delta) > self.max_step_deg:
+            return
+        if abs(delta) < DEFAULT_MIN_MOVE_DEG:
+            return
+        self._signed += delta
+        if self._dir == 0:
+            if abs(self._signed) > 20.0:
+                self._dir = 1 if self._signed > 0 else -1
+            else:
+                return
+        if delta * self._dir < 0 and abs(delta) < 45.0:
+            return
+        self._accum += abs(delta)
+        self.turns = self._accum / 360.0
+        self.last_move = now
 
     def finish(self, now: float | None = None) -> None:
         """外部要求结束（第二次按按钮）：立刻结算圈数并判合格/不合格。"""
