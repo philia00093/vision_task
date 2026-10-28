@@ -609,6 +609,7 @@ def main():
                                 print(f"[螺丝] 按下结束：{screw.describe()}", flush=True)
                             else:
                                 screw.start()
+                                screw_roi_lock = None       # 本次会话的固定 ROI
                                 print("[螺丝] 开始装配支撑杆：统计圈数，目标 ≥ "
                                       f"{screw.min_turns:g} 圈", flush=True)
                 if screw is not None and screw.running:
@@ -619,7 +620,11 @@ def main():
                     # 默认只用**装配区中心**那一块：杆就拧在那里，位置固定，
                     # 不依赖任何检测框（实测 support 经常检不到，框一丢圈数就停）。
                     target = None
-                    if args.screw_roi:
+                    # 会话开始后 ROI **定死**：检测框每帧都抖，ROI 跟着抖会被当成"转动"，
+                    # 这正是"有时候准有时候不准"的原因。第一次算出来就锁住。
+                    if screw_roi_lock is not None:
+                        target = {"box": screw_roi_lock}
+                    elif args.screw_roi:
                         rx, ry, rw, rh = args.screw_roi
                         target = {"box": (rx, ry, rx + rw, ry + rh)}
                     elif region is not None:
@@ -640,6 +645,8 @@ def main():
                             cx_, cy_ = ax + aw // 2, ay + ah // 2
                             target = {"box": (cx_ - side // 2, cy_ - side // 2,
                                               cx_ + side // 2, cy_ + side // 2)}
+                    if target is not None and screw_roi_lock is None:
+                        screw_roi_lock = tuple(target["box"])
                     if target is not None:
                         sx1, sy1, sx2, sy2 = target["box"]
                         pad = int(max(sx2 - sx1, sy2 - sy1) * 0.15)

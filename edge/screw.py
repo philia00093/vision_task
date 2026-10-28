@@ -40,7 +40,7 @@ DEFAULT_MIN_TURNS = 4.5         # 至少 4 圈半
 DEFAULT_TARGET_MAX = 5.0        # 显示用的"目标上限"
 DEFAULT_STOP_SECONDS = 0.8      # 停手多久算拧完
 DEFAULT_MAX_STEP_DEG = 90.0     # 单帧最大可信转角（超过视为丢帧/折叠）
-DEFAULT_MIN_MOVE_DEG = 2.0      # 小于这个角度算"没动"
+DEFAULT_MIN_MOVE_DEG = 0.8      # 小于这个角度算"没动"（慢拧每帧只有 1~2°）
 
 IDLE, RUNNING, OK, NG = "idle", "running", "ok", "ng"
 
