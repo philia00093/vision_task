@@ -55,7 +55,7 @@ class Sampler:
         self.last_count_time = 0.0
         self.fps = 0.0
         self.history: list[dict] = []
-        self.history_max = history
+        self.history_max = min(history, 120)          # 只留 2 分钟，别把页面拖重
         self.samples = 0
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._loop, name="sampler", daemon=True)
@@ -313,7 +313,9 @@ document.getElementById('save').addEventListener('click', async () => {
   }
 });
 
-setInterval(tick, 120);
+setInterval(tick, 300);   /* 原来 120ms(≈8Hz) 太重：页面 + 拉取 + 画图，
+                              Firefox 能吃掉 1.5 个核，把桌面拖到出现
+                              "your system is too slow" 然后整机假死 */
 tick();
 </script></body></html>
 """
@@ -384,7 +386,7 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=2000)
     parser.add_argument("--upstream", default="http://127.0.0.1:8080",
                         help="识别服务地址（server/run_server.py 那个）")
-    parser.add_argument("--poll-hz", type=float, default=10.0, help="从上游拉帧/状态的频率")
+    parser.add_argument("--poll-hz", type=float, default=5.0, help="从上游拉帧/状态的频率")
     args = parser.parse_args()
 
     Handler.sampler = Sampler(args.upstream, args.poll_hz)
