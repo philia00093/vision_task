@@ -45,7 +45,8 @@ DEFAULT_MIN_MOVE_DEG = 2.0      # 小于这个角度算"没动"
 IDLE, RUNNING, OK, NG = "idle", "running", "ok", "ng"
 
 
-DEFAULT_BINS = 36            # 梯度方向直方图的分箱数（2θ 上 0~360，每箱 10° → θ 上 5°）
+DEFAULT_BINS = 180           # 梯度方向直方图分箱：2θ 上 0~360 → 每箱 2°，θ 上 1°
+                             # 36 箱时分辨率只有 5°，每帧转 3° 会被量化成 0（实测圈数恒为 0）
 
 
 def grad_hist(roi, bins: int = DEFAULT_BINS):
@@ -65,10 +66,20 @@ def grad_hist(roi, bins: int = DEFAULT_BINS):
     total = float(mag.sum())
     if total <= 1e-3:                      # 一片死平，没有梯度
         return None
+    # 只保留中心圆形区域（去掉外圈轮缘）：圆盘的边缘是各向同性的，会把直方图摊平，
+    # 真正随转动变化的是中心那根杆。实测不遮轮缘时置信度只有 1.1~1.4。
+    height, width = mag.shape
+    yy, xx = np.ogrid[:height, :width]
+    cy, cx = height * 0.5, width * 0.5
+    radius = min(height, width) * 0.42
+    inner = ((xx - cx) ** 2 + (yy - cy) ** 2) <= radius ** 2
+    mag = mag * inner
     angle = np.arctan2(gy, gx)             # -π ~ π
     doubled = np.mod(2.0 * angle, 2.0 * np.pi)
     idx = (doubled * (bins / (2.0 * np.pi))).astype(np.int32) % bins
-    hist = np.bincount(idx.ravel(), weights=mag.ravel(), minlength=bins).astype(np.float64)
+    # 幅值平方加权：杆这类强边缘占比更大，弱纹理（反光/噪声）被压下去
+    weights = (mag ** 2).ravel()
+    hist = np.bincount(idx.ravel(), weights=weights, minlength=bins).astype(np.float64)
     hist /= (hist.sum() + 1e-9)
     return hist
 
@@ -89,9 +100,15 @@ def hist_shift(prev, cur, bins: int = DEFAULT_BINS):
     peak = int(np.argmax(score))
     mean = float(score.mean()) + 1e-9
     conf = float(score[peak]) / mean
-    if peak > bins // 2:                   # 取最近的旋转方向（±90° 内）
-        peak -= bins
-    degrees = peak * (180.0 / bins)        # 2θ 上每箱 10° → θ 上 5°
+    # 抛物线插值：用峰值左右两个点把角度细化到亚箱精度（不插值会被量化误差吃掉）
+    left, right = score[(peak - 1) % bins], score[(peak + 1) % bins]
+    denom = (left - 2.0 * score[peak] + right)
+    offset = 0.0 if abs(denom) < 1e-12 else 0.5 * (left - right) / denom
+    offset = max(-0.5, min(0.5, offset))
+    shift = peak + offset
+    if shift > bins / 2.0:                 # 取最近的旋转方向（±90° 内）
+        shift -= bins
+    degrees = shift * (180.0 / bins)       # 2θ 每箱 2° → θ 上 1°
     return degrees, conf
 
 
@@ -189,7 +206,8 @@ class ScrewTurns:
         delta = None
         if hist is not None and self._last_hist is not None:
             delta, conf = hist_shift(self._last_hist, hist)
-            if conf < 1.6:                    # 方向结构不明显：这一帧不算
+            if conf < 1.35:                   # 方向结构不明显：这一帧不算
+                                              # （实测静态画面 conf≈1.2，真转动时 >10）
                 delta = None
         if hist is not None:
             self._last_hist = hist
