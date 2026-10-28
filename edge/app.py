@@ -669,6 +669,14 @@ def main():
                                    max(0, int(sx1) - pad):int(sx2) + pad]
                         before = screw.state
                         screw.update(roi)
+                        # 每 0.5 秒打一行诊断：这一帧转了多少、置信度多少、累计多少
+                        if now_stage - getattr(args, "_dbg", 0) > 0.5:
+                            try:
+                                args._dbg = now_stage
+                            except Exception:
+                                pass
+                            print(f"[螺丝] Δ{screw.angle:+.1f}° conf {screw.conf:.2f} "
+                                  f"turns {screw.turns:.2f}", flush=True)
                         if screw.state != before and screw.state in (OK, NG):
                             print(f"[螺丝] 停手：{screw.describe()}", flush=True)
                 # ---- 缺陷识别 1：compass 面积（偏导 → 轮廓 → 面积 → 和基准比）----

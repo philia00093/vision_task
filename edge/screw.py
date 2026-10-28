@@ -220,8 +220,10 @@ class ScrewTurns:
         if abs(delta) > self.max_step_deg:    # 这一帧不可信：别累积
             return
         if abs(delta) >= DEFAULT_MIN_MOVE_DEG:
-            self._accum += delta
-            self.turns = abs(self._accum) / 360.0
+            # 累积**转动量**（绝对值）：拧紧只有一个方向，梯度直方图偶尔会给出反号，
+            # 直接累加就会出现"圈数往下掉"（实测 0.36 → 变小）。取绝对值就单调增。
+            self._accum += abs(delta)
+            self.turns = self._accum / 360.0
             self.last_move = now
         # 不再"停手自动结束"：实测拧的时候和停下来在画面上差别不大，
         # 自动判停会误结算（刚按下就结束）。现在只认按钮：第二次按才结算。
