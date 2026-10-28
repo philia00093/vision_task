@@ -337,7 +337,8 @@ def main():
     # ---- 手部跟踪（本机算，不占网络带宽）----
     if not args.no_hand:
         hand_tracker = HandTracker(min_area_ratio=args.hand_min_area,
-                                   scale=args.hand_scale)
+                                   scale=args.hand_scale,
+                                   max_hands=args.hand_max)
         print(f"手部跟踪：肤色分割 + 卡尔曼 | 最小面积 {args.hand_min_area*100:.1f}% "
               f"| 掩码缩放 {args.hand_scale:g}")
     else:

@@ -92,6 +92,8 @@ DETECT_ARGUMENTS = (
     (("--no-hand",), dict(action="store_true", help="关掉手部跟踪（肤色分割版）")),
     (("--hand-min-area",), dict(type=float, default=0.004,
                                 help="手至少要占画面这个比例才算（默认 0.4%%）")),
+    (("--hand-max",), dict(type=int, default=1,
+                           help="最多跟踪几只手（默认 1，多了容易几个框乱飘）")),
     (("--hand-scale",), dict(type=float, default=0.5,
                              help="肤色掩码在缩小图上的比例（0.5=一半，省 CPU）")),
     (("--hand-cover",), dict(type=float, default=0.3,

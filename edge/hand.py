@@ -60,7 +60,7 @@ class HandTracker:
     def __init__(self, min_area_ratio: float = DEFAULT_MIN_AREA,
                  max_area_ratio: float = DEFAULT_MAX_AREA,
                  max_age: int = DEFAULT_MAX_AGE, trail_len: int = DEFAULT_TRAIL,
-                 max_hands: int = 2, scale: float = 0.5):
+                 max_hands: int = 1, scale: float = 0.5):
         self.min_area = float(min_area_ratio)
         self.max_area = float(max_area_ratio)
         self.max_age = int(max_age)
@@ -104,7 +104,7 @@ class HandTracker:
             box = (x * inv, y * inv, (x + w) * inv, (y + h) * inv)
             boxes.append((box, min(0.99, 0.4 + ratio * 3.0)))
         boxes.sort(key=lambda item: -(item[0][2] - item[0][0]) * (item[0][3] - item[0][1]))
-        return boxes[:self.max_hands]
+        return boxes[:max(1, self.max_hands)]
 
     # ------------------------------------------------------------ 跟踪
     def update(self, frame, now: float | None = None):
@@ -155,6 +155,10 @@ class HandTracker:
 
         hands = []
         for tid, track in self.tracks.items():
+            # 只输出**这一帧真的检出过**的轨迹。之前把预测框也画出来，
+            # 手一拿开就有好几个旧框慢慢飘着走，看着就是"好几个框乱飞"。
+            if track.miss > 0:
+                continue
             box = track.box
             trail = self.trails.setdefault(tid, [])
             trail.append(((box[0] + box[2]) * 0.5, (box[1] + box[3]) * 0.5))
