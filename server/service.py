@@ -20,6 +20,7 @@ import time
 import json
 import argparse
 import re
+import threading
 import socket
 from types import SimpleNamespace
 from pathlib import Path
@@ -34,10 +35,14 @@ except ImportError:                                      # 从别处起 Python �
 from server.model import (DEFAULT_WEIGHTS, LAST, LAST_LOCK, STAGE, STAGE_ZONE, STATE,
                           infer, infer_stage, load_model, load_stage_model)
 from server.pipeline import InferPipeline
+from edge.defects import compass_side       # 罗盘正反：只在电脑端算，树莓派不参与
 
 # 保存"干净帧"的目录：存的是树莓派上传的原始 JPEG，**没有任何画框**
 SNAPSHOT_DIR = Path(__file__).resolve().parent.parent / "output" / "snapshots"
 from server.web import PAGE_HTML
+
+# 阶段模型/手部/罗盘的串行锁（见 _handle_binary 里的说明）
+POST_LOCK = threading.Lock()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -95,7 +100,7 @@ class Handler(BaseHTTPRequestHandler):
                 payload = {"ok": True, "boxes": LAST["boxes"], "ms": LAST["ms"],
                            "size": LAST["size"], "count": LAST["count"],
                            "step": LAST["step"], "flags": list(LAST["flags"]),
-                           "hand": LAST["hand"],
+                           "hand": LAST["hand"], "compass": LAST.get("compass"),
                            "age": (round(time.time() - LAST["time"], 3)
                                    if LAST["time"] else None),
                            "queue": (Handler.pipeline.stats()
@@ -208,28 +213,48 @@ class Handler(BaseHTTPRequestHandler):
             self._send({"ok": False, "error": f"推理失败：{job.error}"}, 500)
             return
         boxes, cost = job.boxes, job.cost_ms
-        # 手部关键点（每 --hand-every 帧一次）：把 21 个点合成手框，当 cls=4 追加到检测里。
-        # 桩：树莓派侧见到 cls=4 就当成"手"，不参与零件跟踪。
-        hand_box = None
-        if Handler.hand is not None:
-            Handler.hand_frame += 1
-            if Handler.hand_frame % max(1, Handler.hand_every) == 0:
-                hand = Handler.hand.detect(image)
-                if hand is not None:
-                    hand_box = tuple(float(v) for v in hand["box"])
-                    if len(boxes) < 4:          # 还有空槽就塞进检测槽（cls=4）
-                        boxes = list(boxes) + [[*hand_box, 4, float(hand["conf"])]]
-                    # 四个槽都被零件占了也没关系：手框走尾部 6 字节回传
+        # 阶段模型 / 手部 / 罗盘都在电脑端算，三样一起串行：
+        # 不加锁时 10 个在飞请求各开一个线程抢 GIL，MediaPipe 单帧从 11 ms 涨到 80 ms，
+        # 整条链路掉到 8 fps（树莓派那边报 398 ms 往返）。串行后 6+5+11 ms，够 50 fps。
+        with POST_LOCK:
+            # 手部关键点（每 --hand-every 帧一次）：把 21 个点合成手框，当 cls=4 追加到检测里。
+            # 桩：树莓派侧见到 cls=4 就当成"手"，不参与零件跟踪。
+            hand_box = None
+            if Handler.hand is not None:
+                Handler.hand_frame += 1
+                if Handler.hand_frame % max(1, Handler.hand_every) == 0:
+                    hands = Handler.hand.detect(image)      # 返回列表：0 只 / 1 只 / 多只
+                    if hands:
+                        hand = max(hands, key=lambda h: float(h.get("conf") or 0.0))
+                        hand_box = tuple(float(v) for v in hand["box"])
+                        if len(boxes) < 4:          # 还有空槽就塞进检测槽（cls=4）
+                            boxes = list(boxes) + [[*hand_box, 4, float(hand["conf"])]]
+                        # 四个槽都被零件占了也没关系：手框走尾部 6 字节回传
+            # 罗盘正反（电脑端算，树莓派只负责显示）：中心毂黑区占比，正面 ≈0.43 / 反面 ≈0.30。
+            # 只在小裁剪图上做 Otsu，单帧 0.5 ms，不占推理时间。
+            compass = None
+            try:
+                names = STATE.get("names") or {}
+                for item in boxes:
+                    if names.get(int(item[4])) == "compass":
+                        side_label, ratio = compass_side(image, item[:4])
+                        if side_label:
+                            compass = {"label": side_label, "ratio": round(float(ratio), 3),
+                                       "box": [round(float(v), 1) for v in item[:4]]}
+                        break
+            except Exception as error:                    # 判定失败不能拖垮整帧推理
+                print(f"[罗盘] 判定失败：{type(error).__name__}: {error}")
+            # 阶段模型（如果有）：结果放进下行帧的预留槽，cls=阶段号、box=框
+            stage = None
+            if STAGE.get("model") is not None:
+                stage = infer_stage(image, self.imgsz, self.stage_conf, self.device)
+            # 下行帧里电脑端说了算的三个字段（现在默认 0/全0/无，可用 POST /stage 临时改）
+            step, flags, hand = STATE["step"], STATE["flags"], STATE["hand"]
+            if stage is not None:
+                hand = {"cls": stage["cls"], "conf": stage["conf"], "box": stage["box"]}
         self._remember(image_info["jpeg"], image, boxes, round(cost, 2))
-        # 阶段模型（如果有）：结果放进下行帧的预留槽，cls=阶段号、box=框
-        stage = None
-        if STAGE.get("model") is not None:
-            stage = infer_stage(image, self.imgsz, self.stage_conf, self.device)
-        # 下行帧里电脑端说了算的三个字段（现在默认 0/全0/无，可用 POST /stage 临时改）
-        step, flags, hand = STATE["step"], STATE["flags"], STATE["hand"]
-        if stage is not None:
-            hand = {"cls": stage["cls"], "conf": stage["conf"], "box": stage["box"]}
         with LAST_LOCK:
+            LAST["compass"] = compass
             LAST.update(step=step, flags=flags, hand=hand)
         try:
             Handler.rcv_nxt = image_info["seq"]

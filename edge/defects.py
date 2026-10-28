@@ -267,24 +267,29 @@ def compass_side(image, box, black_ratio_threshold: float = COMPASS_SIDE_RATIO):
     · 反面：毂是凸台、中间黑孔小 → 黑区小（约 0.30）
     Otsu 自动切阈值，所以不挑曝光；用"占比"而不是亮度绝对值，换位置也不受影响。
 
-    返回 (label, ratio)：
-        label = "front" / "back" / None（没检出、太小、贴边）
+    **只在罗盘框外扩一小块上算**：之前对整幅 1280×960 建坐标网格，
+    树莓派上直接掉到 5 fps。
+
+    返回 (label, ratio)：label = "front" / "back" / None
     """
     if image is None or box is None:
         return None, 0.0
-    height, width = image.shape[:2]
     x1, y1, x2, y2 = (float(v) for v in box)
-    cx, cy = (x1 + x2) * 0.5, (y1 + y2) * 0.5
     size = max(x2 - x1, y2 - y1)
     if size < 40:
         return None, 0.0
-    if cx - size * 0.5 < 0 or cy - size * 0.5 < 0 or \
-            cx + size * 0.5 >= width or cy + size * 0.5 >= height:
+    half = int(size * 0.60)                     # 只取中心 60% 的方框
+    cx, cy = int((x1 + x2) * 0.5), int((y1 + y2) * 0.5)
+    X1, Y1 = max(0, cx - half), max(0, cy - half)
+    X2, Y2 = min(image.shape[1], cx + half), min(image.shape[0], cy + half)
+    crop = image[Y1:Y2, X1:X2]
+    if crop.size == 0:
         return None, 0.0
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY).astype(np.float32) \
-        if image.ndim == 3 else image.astype(np.float32)
-    yy, xx = np.mgrid[0:height, 0:width]
-    hub = np.hypot(xx - cx, yy - cy) <= size * 0.16
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY).astype(np.float32) \
+        if crop.ndim == 3 else crop.astype(np.float32)
+    h, w = gray.shape
+    yy, xx = np.mgrid[0:h, 0:w]                 # 小图（约 200×200），开销可以忽略
+    hub = np.hypot(xx - (cx - X1), yy - (cy - Y1)) <= size * 0.16
     values = gray[hub]
     if values.size < 60:
         return None, 0.0
