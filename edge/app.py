@@ -345,8 +345,20 @@ def main():
     # ---- 手部跟踪（本机算，不占网络带宽）----
 
     # ---- 触摸屏 + 支撑杆计转（都在树莓派本地跑，不依赖电脑）----
+    # 色标颜色的 HSV 区间（订书机红色最稳；绿色/蓝色给备选）
+    MARKER_HSV = {
+        "red":   ((0, 120, 90), (12, 255, 255)),
+        "green": ((40, 90, 90), (85, 255, 255)),
+        "blue":  ((95, 110, 90), (130, 255, 255)),
+    }
+    marker_hsv = MARKER_HSV.get(args.marker) if args.marker != "off" else None
     screw = ScrewTurns(min_turns=args.screw_min_turns, target_max=args.screw_max_turns,
-                       stop_seconds=args.screw_stop)
+                       stop_seconds=args.screw_stop, marker_hsv=marker_hsv)
+    if marker_hsv:
+        print(f"支撑杆计转：**色标模式**（{args.marker}）—— 贴在杆的一端，"
+              f"转一圈标记绕一圈")
+    else:
+        print("支撑杆计转：梯度模式（无标记，精度有限）")
     if not args.no_touch:
         scr_w = fb_screen.width if fb_screen is not None else 1024
         scr_h = fb_screen.height if fb_screen is not None else 600

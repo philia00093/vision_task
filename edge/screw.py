@@ -112,6 +112,43 @@ def hist_shift(prev, cur, bins: int = DEFAULT_BINS):
     return degrees, conf
 
 
+def marker_angle(roi, hsv_lo, hsv_hi, center=None):
+    """在 ROI 里找一个**色标**，返回它相对 ROI 中心的角度。
+
+    这是最稳的方式：标记点颜色独特、面积小、每帧质心都干净，
+    角度只跟它在圆上的位置有关，不受托盘纹理/光照整体变化影响。
+    """
+    if roi is None or roi.size == 0:
+        return None, 0.0
+    height, width = roi.shape[:2]
+    cx, cy = (width * 0.5, height * 0.5) if center is None else center
+    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+    mask = cv2.inRange(hsv, np.array(hsv_lo, np.uint8), np.array(hsv_hi, np.uint8))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return None, 0.0
+    area_max = float(width * height) or 1.0
+    best = None
+    for contour in contours:
+        area = cv2.contourArea(contour)
+        if area / area_max < 0.0008 or area / area_max > 0.15:
+            continue
+        moments = cv2.moments(contour)
+        if moments["m00"] <= 0:
+            continue
+        mx, my = moments["m10"] / moments["m00"], moments["m01"] / moments["m00"]
+        dist = math.hypot(mx - cx, my - cy)
+        if dist < 0.10 * min(width, height):      # 贴在轴心上就量不出角度
+            continue
+        if best is None or area > best[0]:
+            best = (area, mx, my)
+    if best is None:
+        return None, 0.0
+    _area, mx, my = best
+    return math.degrees(math.atan2(my - cy, mx - cx)), 1.0
+
+
 def tip_angle(roi, center=None):
     """在一小块图里找"偏心标记点"，返回 (角度°, 置信度)。
 
@@ -155,11 +192,14 @@ class ScrewTurns:
     def __init__(self, min_turns: float = DEFAULT_MIN_TURNS,
                  target_max: float = DEFAULT_TARGET_MAX,
                  stop_seconds: float = DEFAULT_STOP_SECONDS,
-                 max_step_deg: float = DEFAULT_MAX_STEP_DEG):
+                 max_step_deg: float = DEFAULT_MAX_STEP_DEG,
+                 marker_hsv=None):
         self.min_turns = float(min_turns)
         self.target_max = float(target_max)
         self.stop_seconds = float(stop_seconds)
         self.max_step_deg = float(max_step_deg)
+        self.marker_hsv = marker_hsv            # (lo, hi)；给了就用色标，否则退回梯度
+        self.mode = "marker" if marker_hsv else "grad"
         self.state = IDLE
         self.turns = 0.0
         self.angle = None
@@ -200,7 +240,30 @@ class ScrewTurns:
         now = time.time() if now is None else now
         if self.state != RUNNING:
             return
-        # 梯度方向直方图的帧间平移 = 这一帧转过的角度
+        # ① 有贴纸色标就用它：直接给出"标记点相对旋转中心"的角度，最稳
+        if self.marker_hsv is not None:
+            lo, hi = self.marker_hsv
+            angle, conf = marker_angle(roi, lo, hi)
+            self.conf = conf
+            if angle is None:
+                self.lost += 1
+                return
+            self.lost = 0
+            self.angle = float(angle)
+            if self._last_angle is None:
+                self._last_angle = self.angle
+                return
+            delta = (self.angle - self._last_angle + 180.0) % 360.0 - 180.0
+            self._last_angle = self.angle
+            if abs(delta) > self.max_step_deg:
+                return
+            if abs(delta) >= DEFAULT_MIN_MOVE_DEG:
+                self._accum += abs(delta)
+                self.turns = self._accum / 360.0
+                self.last_move = now
+            return
+
+        # ② 没贴色标：退回梯度方向直方图（弱，仅作兜底）
         hist = grad_hist(roi)
         conf = 0.0
         delta = None

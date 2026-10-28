@@ -176,6 +176,8 @@ DETECT_ARGUMENTS = (
                                   help="支撑杆至少要拧多少圈才算合格（默认 4.5）")),
     (("--screw-max-turns",), dict(type=float, default=5.0,
                                   help="目标圈数上限（只用于显示）")),
+    (("--marker",), dict(choices=("red", "green", "blue", "off"), default="off",
+                         help="杆上贴的色标颜色（推荐 red）；off=不用色标，退回梯度法")),
     (("--screw-roi-ratio",), dict(type=float, default=0.45,
                                   help="默认 ROI = 装配区中心、边长为区域的这个比例"
                                        "（1.0 = 整个装配区）")),
