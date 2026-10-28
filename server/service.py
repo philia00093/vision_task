@@ -116,10 +116,13 @@ class Handler(BaseHTTPRequestHandler):
                 from server.hand_mp import HANDS
             except Exception:
                 HANDS = {}
-            last = HANDS.get("last")
+            last = HANDS.get("last") or []
+            if isinstance(last, dict):        # 兼容老格式（单只手）
+                last = [last]
             self._send({"ok": bool(last),
-                        "points": (last or {}).get("points") or [],
-                        "conf": (last or {}).get("conf", 0.0),
+                        "hands": [{"points": h.get("points") or [],
+                                   "conf": h.get("conf", 0.0)} for h in last],
+                        "points": (last[0].get("points") or []) if last else [],
                         "cost_ms": round(HANDS.get("cost_ms", 0.0), 1),
                         "hits": HANDS.get("hits", 0)})
             return

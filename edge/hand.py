@@ -198,6 +198,7 @@ class HandFeed:
         self.url = server_url.rstrip("/") + "/hand"
         self.period = 1.0 / max(hz, 0.5)
         self.timeout = float(timeout)
+        self.hands: list = []          # [{points:[(x,y)...], conf}]
         self.points: list = []
         self.conf = 0.0
         self.ok = False
@@ -215,8 +216,14 @@ class HandFeed:
                 with urllib.request.urlopen(self.url, timeout=self.timeout) as response:
                     payload = json.loads(response.read().decode("utf-8"))
                 with self._lock:
-                    self.points = payload.get("points") or []
-                    self.conf = float(payload.get("conf") or 0.0)
+                    hands = payload.get("hands")
+                    if not hands:
+                        hands = [{"points": payload.get("points") or [],
+                                  "conf": payload.get("conf") or 0.0}]
+                    self.hands = [(h.get("points") or [], float(h.get("conf") or 0.0))
+                                  for h in hands if h.get("points")]
+                    self.points = self.hands[0][0] if self.hands else []
+                    self.conf = self.hands[0][1] if self.hands else 0.0
                     self.ok = bool(payload.get("ok"))
                     self.error = ""
             except Exception as error:
@@ -228,6 +235,11 @@ class HandFeed:
     def latest(self):
         with self._lock:
             return list(self.points), self.conf
+
+    def latest_hands(self):
+        """所有手：[([(x,y)...], conf), ...]。"""
+        with self._lock:
+            return [(list(points), conf) for points, conf in self.hands]
 
     def close(self) -> None:
         self._stop.set()

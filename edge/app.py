@@ -549,12 +549,15 @@ def main():
                 # ---- 手部：肤色分割 + 卡尔曼跟踪，并把"手在各区域的占比"写回区域状态 ----
                 hands = []
                 keypoints = []
+                hands_kp = []                     # 每只手的 21 点（view 坐标）
                 if hand_feed is not None:
-                    pts_crop, conf_k = hand_feed.latest()
-                    if pts_crop:
-                        ox_, oy_ = last_offset
-                        sc_ = last_scale or 1.0
-                        keypoints = [(p[0] / sc_ + ox_, p[1] / sc_ + oy_) for p in pts_crop]
+                    ox_, oy_ = last_offset
+                    sc_ = last_scale or 1.0
+                    for pts_crop, _conf_k in hand_feed.latest_hands():
+                        pts = [(p[0] / sc_ + ox_, p[1] / sc_ + oy_) for p in pts_crop]
+                        if pts:
+                            hands_kp.append(pts)
+                    keypoints = list(hands_kp[0]) if hands_kp else []
                 # ① 电脑端 MediaPipe（21 点 → 手框）优先
                 #    两个来源：检测槽里的 cls=4，或者尾部 6 字节压缩手框（槽被零件占满时）
                 model_hand = getattr(tracker_parts, "hand_box", None)
@@ -587,11 +590,13 @@ def main():
                         hand["from"] = "skin"
                         hands.append(hand)
                 # 有 21 关键点时，用关键点外接框算区域占比（比肤色框准，且不画框）
-                if keypoints:
-                    kx = [p[0] for p in keypoints]; ky = [p[1] for p in keypoints]
-                    hands = [{"box": (min(kx), min(ky), max(kx), max(ky)),
-                              "conf": 1.0, "track_id": -1, "trail": [],
-                              "predicted": False, "from": "mediapipe"}]
+                if hands_kp:
+                    hands = []
+                    for pts in hands_kp:
+                        kx = [p[0] for p in pts]; ky = [p[1] for p in pts]
+                        hands.append({"box": (min(kx), min(ky), max(kx), max(ky)),
+                                      "conf": 1.0, "track_id": -1, "trail": [],
+                                      "predicted": False, "from": "mediapipe"})
                     for zone in tracker_zones.zones:
                         box = zone.get("box")
                         if box is None:
@@ -833,9 +838,9 @@ def main():
                         if det["trail"]:
                             draw_trail(view, det["trail"], TRAIL_COLOR,
                                        thickness=args.trail_width)
-                # 手：只画 21 个关键点，**不画任何手框**
-                if keypoints:
-                    draw_keypoints(view, keypoints, HAND_COLOR,
+                # 手：每只手画 21 个关键点，**不画任何手框**
+                for pts in hands_kp:
+                    draw_keypoints(view, pts, HAND_COLOR,
                                    radius=max(3, args.line_width + 1))
 
                 # 装配区里的零件**完全不画**：不跟踪、也不显示静态框和标签。

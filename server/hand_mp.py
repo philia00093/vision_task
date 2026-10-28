@@ -69,19 +69,20 @@ class HandLandmarker:
         cost = (time.time() - started) * 1000.0
         HANDS["cost_ms"] = cost
         if not result.hand_landmarks:
-            HANDS["last"] = None
-            return None
-        hand = result.hand_landmarks[0]        # 只发最靠前（最可信）的那只
-        xs = [min(max(p.x, 0.0), 1.0) * width for p in hand]
-        ys = [min(max(p.y, 0.0), 1.0) * height for p in hand]
-        points = [[round(x, 1), round(y, 1)] for x, y in zip(xs, ys)]
-        box = (min(xs), min(ys), max(xs), max(ys))
-        conf = 1.0
-        if getattr(result, "handedness", None):
+            HANDS["last"] = []
+            return []
+        hands = []
+        for index, hand in enumerate(result.hand_landmarks):
+            xs = [min(max(p.x, 0.0), 1.0) * width for p in hand]
+            ys = [min(max(p.y, 0.0), 1.0) * height for p in hand]
+            points = [[round(x, 1), round(y, 1)] for x, y in zip(xs, ys)]
+            box = (min(xs), min(ys), max(xs), max(ys))
+            conf = 1.0
             try:
-                conf = float(result.handedness[0][0].score)
+                conf = float(result.handedness[index][0].score)
             except Exception:
                 conf = 1.0
-        HANDS["last"] = {"points": points, "box": box, "conf": conf}
+            hands.append({"box": box, "points": points, "conf": conf})
+        HANDS["last"] = hands
         HANDS["hits"] += 1
-        return {"box": box, "points": points, "conf": conf}
+        return hands
