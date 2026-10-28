@@ -135,9 +135,7 @@ class ScrewTurns:
         self.conf = conf
         if angle is None:
             self.lost += 1
-            if self.lost > 8:                 # 太久看不到：判跟丢，按停手处理
-                self._finish()
-            return
+            return                            # 跟丢只是暂停累积，不结算（等按钮）
         self.lost = 0
         if self._last_angle is None:
             self._last_angle = angle
@@ -152,8 +150,12 @@ class ScrewTurns:
             self._accum += delta
             self.turns = abs(self._accum) / 360.0
             self.last_move = now
-        elif now - self.last_move > self.stop_seconds:
-            self._finish(now)
+        # 不再"停手自动结束"：实测拧的时候和停下来在画面上差别不大，
+        # 自动判停会误结算（刚按下就结束）。现在只认按钮：第二次按才结算。
+
+    def finish(self, now: float | None = None) -> None:
+        """外部要求结束（第二次按按钮）：立刻结算圈数并判合格/不合格。"""
+        self._finish(now)
 
     def _finish(self, now: float | None = None) -> None:
         now = time.time() if now is None else now

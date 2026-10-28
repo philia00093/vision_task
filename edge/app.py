@@ -625,11 +625,34 @@ def main():
                             continue
                         vx, vy = (tx - ox) / sc, (ty - oy) / sc
                         if bx1 <= vx <= bx2 and by1 <= vy <= by2:
-                            screw.start()
-                            print("[螺丝] 开始装配支撑杆：统计圈数，目标 ≥ "
-                                  f"{screw.min_turns:g} 圈", flush=True)
+                            if screw.running:
+                                # 第二次按：装配完成，立刻结算
+                                screw.finish()
+                                print(f"[螺丝] 按下结束：{screw.describe()}", flush=True)
+                            else:
+                                screw.start()
+                                print("[螺丝] 开始装配支撑杆：统计圈数，目标 ≥ "
+                                      f"{screw.min_turns:g} 圈", flush=True)
                 if screw is not None and screw.running:
-                    target = next((d for d in detections if d["name"] == "support"), None)
+                    # ROI 选择顺序（这是之前圈数一直 0 的根因：support 常常检不到）：
+                    #   ① 命令行固定的 --screw-roi
+                    #   ② 装配区里的 base（杆是拧在盘上的，盘框稳定得多）
+                    #   ③ support 框
+                    target = None
+                    if args.screw_roi:
+                        rx, ry, rw, rh = args.screw_roi
+                        target = {"box": (rx, ry, rx + rw, ry + rh)}
+                    elif region is not None:
+                        ax, ay, aw, ah = region
+                        for det in detections:
+                            bx1, by1, bx2, by2 = det["box"]
+                            cx_, cy_ = (bx1 + bx2) / 2, (by1 + by2) / 2
+                            if (det["name"] in ("base", "support")
+                                    and ax <= cx_ <= ax + aw and ay <= cy_ <= ay + ah):
+                                target = det
+                                break
+                    if target is None:
+                        target = next((d for d in detections if d["name"] == "support"), None)
                     if target is not None:
                         sx1, sy1, sx2, sy2 = target["box"]
                         pad = int(max(sx2 - sx1, sy2 - sy1) * 0.15)
