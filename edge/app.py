@@ -83,10 +83,11 @@ def commit_stage(history, window, now):
         return None
     winner = dict(items[-1])
     scores = [_score(item) for item in items]
-    bad = [item.get("method") for item in items
+    bad = [(item.get("method"), type(item.get("score")).__name__, repr(item.get("score")))
+           for item in items
            if not isinstance(item.get("score", 0.0), (int, float))]
     if bad:
-        print(f"[阶段] 警告：这些分支的 score 不是数字 {set(bad)}，已按 0 处理", flush=True)
+        print(f"[阶段] 警告：score 类型异常 {bad[:2]}", flush=True)
     winner["score"] = sum(scores) / len(scores)
     winner["votes"] = f"{len(items)}/{len(history)}"
     return winner
@@ -645,8 +646,11 @@ def main():
                                 conf = float(remote.hand.get("conf", 0.0) or 0.0)
                             except (TypeError, ValueError):
                                 conf = 0.0
-                            model_hit = (step_names[cls], conf,
-                                         f"阶段模型 conf={conf:.2f}")
+                            # 注意顺序要和下面 `rule_stage, rule_reason, rule_score = model_hit`
+                            # 一致：(标签, 说明, 分数)。之前写成 (标签, 分数, 说明)，
+                            # 结果 score 拿到的是说明字符串，投票求均值就崩了。
+                            model_hit = (step_names[cls],
+                                         f"阶段模型 conf={conf:.2f}", conf)
                             last_model_ts = now_stage
                     if model_hit is not None:
                         rule_stage, rule_reason, rule_score = model_hit
