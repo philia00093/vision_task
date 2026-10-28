@@ -24,7 +24,7 @@ from edge.drawing import (_measure_label, draw_area_verdict, draw_detection, dra
                           draw_text_box, load_cjk_font)
 from edge.framebuffer import FbWriter
 from edge.grabber import FrameGrabber
-from edge.hand import HandTracker
+from edge.hand import HandFeed, HandTracker, draw_keypoints
 from edge.imaging import contours_to_boxes, prepare_detect_input, save_image, take_right
 from edge.parts import PartTracker
 from edge.stage_match import CascadeStageMatcher, SiftStageMatcher, StageMatcher
@@ -253,6 +253,7 @@ def main():
         stage_worker = None          # 后台识别线程（stage 没启用就是 None）
         part_counter = None          # 数零件定阶段（4 类零件少几个 = 第几步）
         hand_tracker = None          # 手部检测+跟踪（肤色分割 + 卡尔曼）
+        hand_feed = None             # 电脑端 21 关键点（MediaPipe）低速拉取
         touch = None                 # 触摸屏（屏幕右下角的按钮用）
         screw = None                 # 支撑杆拧紧计转
         screw_rect = None            # 按钮在 view 坐标里的位置
@@ -333,6 +334,11 @@ def main():
     fb_screen = FbWriter(args.fb, mode=args.fb_mode, rotate=args.fb_rotate) if args.fb else None
     if fb_screen is not None:
         print(f"          屏幕 {fb_screen.describe()}")
+
+    # ---- 手部关键点：优先用电脑端 MediaPipe 的 21 点（5Hz 拉取，不影响主链路）----
+    if not args.no_hand and args.infer_backend == "http" and args.server_url:
+        hand_feed = HandFeed(args.server_url, hz=args.hand_hz)
+        print(f"手部关键点：GET {args.server_url.rstrip('/')}/hand（{args.hand_hz:g}Hz）")
 
     # ---- 手部跟踪（本机算，不占网络带宽）----
     if not args.no_hand:
@@ -539,6 +545,13 @@ def main():
                 detections = tracker_parts.tick()      # 每帧都跑：预测补框，显示才连贯
                 # ---- 手部：肤色分割 + 卡尔曼跟踪，并把"手在各区域的占比"写回区域状态 ----
                 hands = []
+                keypoints = []
+                if hand_feed is not None:
+                    pts_crop, conf_k = hand_feed.latest()
+                    if pts_crop:
+                        ox_, oy_ = last_offset
+                        sc_ = last_scale or 1.0
+                        keypoints = [(p[0] / sc_ + ox_, p[1] / sc_ + oy_) for p in pts_crop]
                 # ① 电脑端 MediaPipe（21 点 → 手框）优先
                 #    两个来源：检测槽里的 cls=4，或者尾部 6 字节压缩手框（槽被零件占满时）
                 model_hand = getattr(tracker_parts, "hand_box", None)
@@ -570,6 +583,12 @@ def main():
                             continue
                         hand["from"] = "skin"
                         hands.append(hand)
+                # 有 21 关键点时，用关键点外接框算区域占比（比肤色框准，且不画框）
+                if keypoints:
+                    kx = [p[0] for p in keypoints]; ky = [p[1] for p in keypoints]
+                    hands = [{"box": (min(kx), min(ky), max(kx), max(ky)),
+                              "conf": 1.0, "track_id": -1, "trail": [],
+                              "predicted": False, "from": "mediapipe"}]
                     for zone in tracker_zones.zones:
                         box = zone.get("box")
                         if box is None:
@@ -810,8 +829,11 @@ def main():
                         if det["trail"]:
                             draw_trail(view, det["trail"], TRAIL_COLOR,
                                        thickness=args.trail_width)
-                # 手：洋红框 + 轨迹（比零件粗，容易和零件区分）
-                for hand in hands:
+                # 手：有 21 关键点就只画点（不画框），没有才退回框
+                if keypoints:
+                    draw_keypoints(view, keypoints, HAND_COLOR,
+                                   radius=max(3, args.line_width + 1))
+                for hand in hands if not keypoints else []:
                     if hand.get("trail"):
                         draw_trail(view, hand["trail"], HAND_COLOR,
                                    thickness=max(2, args.trail_width - 1))

@@ -111,6 +111,18 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._send_bytes(jpeg, "image/jpeg")
             return
+        if path == "/hand":                              # 手部 21 个关键点（MediaPipe）
+            try:
+                from server.hand_mp import HANDS
+            except Exception:
+                HANDS = {}
+            last = HANDS.get("last")
+            self._send({"ok": bool(last),
+                        "points": (last or {}).get("points") or [],
+                        "conf": (last or {}).get("conf", 0.0),
+                        "cost_ms": round(HANDS.get("cost_ms", 0.0), 1),
+                        "hits": HANDS.get("hits", 0)})
+            return
         if path == "/save":
             self._handle_save()
             return

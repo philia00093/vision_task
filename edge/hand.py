@@ -183,3 +183,69 @@ class HandTracker:
         inter = (ix2 - ix1) * (iy2 - iy1)
         area = max(1e-6, (hx2 - hx1) * (hy2 - hy1))
         return float(inter / area)
+
+
+class HandFeed:
+    """从电脑端拉 21 个手部关键点（`GET /hand`），5Hz 就够。
+
+    为什么单独走一个接口：21 个点 = 84 字节，160 字节的下行帧放不下；
+    而这个信息**不需要和图像帧严格对齐**（手是连续运动的），低频拉取完全够用，
+    还不会影响主链路（拉取失败就当没有手）。
+    """
+
+    def __init__(self, server_url: str, hz: float = 5.0, timeout: float = 0.6):
+        import threading
+        self.url = server_url.rstrip("/") + "/hand"
+        self.period = 1.0 / max(hz, 0.5)
+        self.timeout = float(timeout)
+        self.points: list = []
+        self.conf = 0.0
+        self.ok = False
+        self.error = ""
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, name="hand-feed", daemon=True)
+        self._thread.start()
+
+    def _run(self) -> None:
+        import json
+        import urllib.request
+        while not self._stop.is_set():
+            try:
+                with urllib.request.urlopen(self.url, timeout=self.timeout) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+                with self._lock:
+                    self.points = payload.get("points") or []
+                    self.conf = float(payload.get("conf") or 0.0)
+                    self.ok = bool(payload.get("ok"))
+                    self.error = ""
+            except Exception as error:
+                with self._lock:
+                    self.ok = False
+                    self.error = f"{type(error).__name__}"
+            self._stop.wait(self.period)
+
+    def latest(self):
+        with self._lock:
+            return list(self.points), self.conf
+
+    def close(self) -> None:
+        self._stop.set()
+
+
+def draw_keypoints(frame, points, color=(255, 0, 255), radius: int = 4) -> None:
+    """把 21 个关键点画成一串小圆点（+ 指节连线），不用外框。"""
+    if not points:
+        return
+    import numpy as _np
+    pts = [tuple(int(round(v)) for v in p[:2]) for p in points]
+    # MediaPipe 的 21 点连接关系（手掌 5 指）
+    chains = [(0, 1, 2, 3, 4), (0, 5, 6, 7, 8), (9, 10, 11, 12),
+              (13, 14, 15, 16), (0, 17, 18, 19, 20), (5, 9, 13, 17)]
+    for chain in chains:
+        for a, b in zip(chain[:-1], chain[1:]):
+            if a < len(pts) and b < len(pts):
+                cv2.line(frame, pts[a], pts[b], color, 2, cv2.LINE_AA)
+    for index, point in enumerate(pts):
+        r = radius + 1 if index in (4, 8, 12, 16, 20) else radius
+        cv2.circle(frame, point, r, color, -1, cv2.LINE_AA)
