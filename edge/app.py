@@ -637,7 +637,21 @@ def main():
                     # 规则说"0/1 分不出"（返回 None）时才落到图像分支。
                     rule_stage, rule_reason, rule_score = (UNKNOWN, "", 0.0)
                     material_rect = tracker_zones.region("物料区")
-                    if part_counter is not None and region is not None:
+                    # ① 先看阶段模型（电脑端 best(2).pt，类别 step_0..step_3/complete）：
+                    #    结果由服务端放在下行帧的预留槽里回来，cls=阶段号。
+                    model_hit = None
+                    remote = (tracker_parts.runner.remote
+                              if tracker_parts is not None else None)
+                    if remote is not None and remote.hand:
+                        cls = int(remote.hand.get("cls", -1))
+                        step_names = {0: "step0", 1: "step1", 2: "step2",
+                                      3: "step3", 4: "complete"}
+                        if cls in step_names:
+                            model_hit = (step_names[cls], remote.hand.get("conf", 0.0),
+                                         f"阶段模型 conf={remote.hand.get('conf', 0):.2f}")
+                    if model_hit is not None:
+                        rule_stage, rule_reason, rule_score = model_hit
+                    elif part_counter is not None and region is not None:
                         rule_stage, rule_reason, rule_score = part_counter.update(
                             detections, tracker_parts.names, region, material_rect)
                     elif tracker_parts is not None and region is not None:
@@ -646,7 +660,8 @@ def main():
                     if rule_stage is not None:
                         stage_history.append((now_stage, {
                             "label": rule_stage, "raw_label": rule_stage,
-                            "score": rule_score, "angle": 0.0, "method": "parts",
+                            "score": rule_score, "angle": 0.0,
+                            "method": ("model" if model_hit is not None else "parts"),
                             "kp": 0, "note": rule_reason}))
                         stage_cost = 0.0
                     elif region is not None:
@@ -800,8 +815,8 @@ def main():
                             method = stage_result.get("method")
                             if method == "nn":
                                 stage_text += f" kp{stage_result.get('kp', 0)}"
-                            elif method == "parts":
-                                stage_text += ""          # 数零件的结论，没有"摆角"这回事
+                            elif method in ("parts", "model"):
+                                stage_text += ""     # 规则/模型结论，没有"摆角"这回事
                             else:
                                 stage_text += f" {stage_result['angle']:+.1f}°"
                         draw_stage(view, (rx, ry, rx + rw, ry + rh), stage_text,
@@ -811,7 +826,7 @@ def main():
                 # 现在服务端一般发 valid=0，也就是不画。
                 if tracker_parts is not None and tracker_parts.runner.remote is not None:
                     hand = tracker_parts.runner.remote.hand
-                    if hand:
+                    if hand and int(hand.get("cls", -1)) not in (0, 1, 2, 3, 4):
                         draw_detection(view, hand["xyxy"], f"hand {hand['conf']:.2f}",
                                        HAND_COLOR, font=label_font,
                                        thickness=args.line_width, top_margin=status_height)

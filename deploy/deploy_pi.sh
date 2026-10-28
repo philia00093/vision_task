@@ -62,6 +62,15 @@ else
         || die "改启动脚本失败"
 fi
 
+# ---------- 5.5 把电脑当前 IP 写进 Pi 的启动脚本 ----------
+# 手机热点每次分配不同网段（实测 10.105/10.132/10.73/10.25 都出现过），
+# 手写 FIXED 一定会过期。这里每次部署都把本机当前 IP 写过去，省得 Pi 连错地址。
+LAPTOP_IP="$(hostname -I | awk '{print $1}')"
+if [ -n "$LAPTOP_IP" ]; then
+    ssh_pi "sudo sed -i 's|^FIXED=.*|FIXED=\"$LAPTOP_IP\"|' $START_SH" \
+        && say "Pi 服务端地址 → $LAPTOP_IP:8080"
+fi
+
 # ---------- 6. 重启 + 自检 ----------
 say "重启 vision-edge"
 ssh_pi 'sudo systemctl restart vision-edge' || die "重启失败"

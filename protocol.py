@@ -390,9 +390,11 @@ def encode_result_frame(ref_seq: int, detections=(), step: int = STEP_UNKNOWN,
         else:
             payload += _pack_slot(0, False, 0.0, None)
 
-    if hand:                                             # 手部槽（预留，先占位）
+    if hand:                                             # 预留槽：现在装「阶段模型」的框
         quad = hand.get("quad") or quad_from_xyxy(*hand["box"])
-        payload += _pack_slot(0, True, hand.get("conf", 0.0), quad)
+        # cls 以前写死 0；现在允许填，用来传阶段模型的类别号（0=step_0 … 4=complete）
+        payload += _pack_slot(int(hand.get("cls", 0)) & 0xFF, True,
+                              hand.get("conf", 0.0), quad)
     else:
         payload += _pack_slot(0, False, 0.0, None)
 

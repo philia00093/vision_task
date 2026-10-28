@@ -31,7 +31,8 @@ except ImportError:                                      # 从别处起 Python �
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     import protocol as wire
 
-from server.model import DEFAULT_WEIGHTS, LAST, LAST_LOCK, STATE, infer, load_model
+from server.model import (DEFAULT_WEIGHTS, LAST, LAST_LOCK, STAGE, STAGE_ZONE, STATE,
+                          infer, infer_stage, load_model, load_stage_model)
 from server.pipeline import InferPipeline
 
 # 保存"干净帧"的目录：存的是树莓派上传的原始 JPEG，**没有任何画框**
@@ -42,6 +43,7 @@ from server.web import PAGE_HTML
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     pipeline: "InferPipeline | None" = None       # 推理流水线（main() 里建好挂上来）
+    stage_conf: float = 0.35                       # 阶段模型的置信度阈值
     imgsz = 640
     conf = 0.35
     iou = 0.5
@@ -190,8 +192,14 @@ class Handler(BaseHTTPRequestHandler):
             return
         boxes, cost = job.boxes, job.cost_ms
         self._remember(image_info["jpeg"], image, boxes, round(cost, 2))
+        # 阶段模型（如果有）：结果放进下行帧的预留槽，cls=阶段号、box=框
+        stage = None
+        if STAGE.get("model") is not None:
+            stage = infer_stage(image, self.imgsz, self.stage_conf, self.device)
         # 下行帧里电脑端说了算的三个字段（现在默认 0/全0/无，可用 POST /stage 临时改）
         step, flags, hand = STATE["step"], STATE["flags"], STATE["hand"]
+        if stage is not None:
+            hand = {"cls": stage["cls"], "conf": stage["conf"], "box": stage["box"]}
         with LAST_LOCK:
             LAST.update(step=step, flags=flags, hand=hand)
         try:
@@ -375,6 +383,14 @@ def main() -> int:
     parser.add_argument("--token", default="", help="简单口令：客户端要带同样的 X-Token")
     parser.add_argument("--window", type=int, default=6,
                         help="滑动窗口：允许树莓派同时在飞的帧数（默认 6）")
+    parser.add_argument("--stage-weights", default="",
+                        help="阶段模型权重（可选，类别 step_0..step_3/complete）；"
+                             "给了就每帧多跑一次，结果走下行帧预留槽")
+    parser.add_argument("--stage-confs", type=float, default=0.35,
+                        help="阶段模型置信度阈值")
+    parser.add_argument("--stage-zone", type=int, nargs=4, metavar=("X", "Y", "W", "H"),
+                        default=None,
+                        help="只采信中心落在这个矩形里的阶段框（装配区，原图坐标）")
     parser.add_argument("--workers", type=int, default=1,
                         help="推理 worker 数（GPU 上 1 个就够，多了反而抢锁）")
     parser.add_argument("--queue", type=int, default=8,
@@ -387,8 +403,14 @@ def main() -> int:
         print(f"[错误] 找不到权重 {args.weights}")
         return 2
     load_model(args.weights, args.device, args.imgsz)
+    if args.stage_weights:
+        STAGE_ZONE["rect"] = tuple(args.stage_zone) if args.stage_zone else None
+        load_stage_model(args.stage_weights, args.device, args.imgsz)
+        if STAGE_ZONE["rect"]:
+            print(f"[阶段模型] 只采信装配区 {STAGE_ZONE['rect']} 内的框")
 
     Handler.imgsz, Handler.conf = args.imgsz, args.conf
+    Handler.stage_conf = args.stage_confs
     Handler.iou, Handler.device = args.iou, args.device
     Handler.window = max(1, min(int(args.window), 32))
     STATE["token"] = args.token

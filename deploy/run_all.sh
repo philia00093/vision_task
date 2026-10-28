@@ -16,6 +16,9 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PY="$HOME/miniforge3/envs/yolo26/bin/python"
 PI_HOST="${PI_HOST:-visionpi.local}"
 WEIGHTS="${WEIGHTS:-$ROOT/vision_yolo_train/runs/wersion_parts/weights/best.pt}"
+# 阶段模型（可选）：类别 step_0..step_3/complete；只采信装配区里的框
+STAGE_WEIGHTS="${STAGE_WEIGHTS:-$ROOT/vision_yolo_train/runs/steps_stage_best.pt}"
+STAGE_ZONE="${STAGE_ZONE:-60 62 344 344}"
 
 bold() { printf '\n\033[1;36m== %s ==\033[0m\n' "$*"; }
 ok()   { printf '  \033[32m✓\033[0m %s\n' "$*"; }
@@ -47,9 +50,13 @@ pi_ssh() {
 start_server() {
     if busy 8080; then ok "识别服务已在跑（8080）"; return; fi
     [ -f "$WEIGHTS" ] || { bad "找不到权重 $WEIGHTS"; return 1; }
+    extra=()
+    if [ -n "$STAGE_WEIGHTS" ] && [ -f "$STAGE_WEIGHTS" ]; then
+        extra=(--stage-weights "$STAGE_WEIGHTS" --stage-zone $STAGE_ZONE)
+    fi
     setsid nohup "$PY" -u "$ROOT/server/run_server.py" \
         --host 0.0.0.0 --port 8080 --imgsz 960 --device 0 --window 16 \
-        --weights "$WEIGHTS" > /tmp/server.log 2>&1 < /dev/null &
+        --weights "$WEIGHTS" "${extra[@]}" > /tmp/server.log 2>&1 < /dev/null &
     disown
     for _ in $(seq 1 30); do busy 8080 && break; sleep 1; done
     busy 8080 && ok "识别服务已启动（8080，$(basename "$WEIGHTS")）" \
