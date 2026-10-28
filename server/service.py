@@ -44,6 +44,8 @@ class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     pipeline: "InferPipeline | None" = None       # 推理流水线（main() 里建好挂上来）
     stage_conf: float = 0.35                       # 阶段模型的置信度阈值
+    hand = None                                    # MediaPipe 手部关键点（有模型才建）
+    hand_frame = 0                                 # 手部检测的帧计数（--hand-every）
     imgsz = 640
     conf = 0.35
     iou = 0.5
@@ -191,6 +193,18 @@ class Handler(BaseHTTPRequestHandler):
             self._send({"ok": False, "error": f"推理失败：{job.error}"}, 500)
             return
         boxes, cost = job.boxes, job.cost_ms
+        # 手部关键点（每 --hand-every 帧一次）：把 21 个点合成手框，当 cls=4 追加到检测里。
+        # 桩：树莓派侧见到 cls=4 就当成"手"，不参与零件跟踪。
+        hand_box = None
+        if Handler.hand is not None:
+            Handler.hand_frame += 1
+            if Handler.hand_frame % max(1, Handler.hand_every) == 0:
+                hand = Handler.hand.detect(image)
+                if hand is not None:
+                    hand_box = tuple(float(v) for v in hand["box"])
+                    if len(boxes) < 4:          # 还有空槽就塞进检测槽（cls=4）
+                        boxes = list(boxes) + [[*hand_box, 4, float(hand["conf"])]]
+                    # 四个槽都被零件占了也没关系：手框走尾部 6 字节回传
         self._remember(image_info["jpeg"], image, boxes, round(cost, 2))
         # 阶段模型（如果有）：结果放进下行帧的预留槽，cls=阶段号、box=框
         stage = None
@@ -210,7 +224,8 @@ class Handler(BaseHTTPRequestHandler):
                                             seq=self.server_seq,
                                             ack_seq=image_info["seq"],
                                             rcv_nxt=image_info["seq"],
-                                            win=self.window)
+                                            win=self.window,
+                                            hand_box=hand_box)
         except wire.FrameError as error:
             self._send({"ok": False, "error": f"回包组不起来：{error}"}, 500)
             return
@@ -383,6 +398,11 @@ def main() -> int:
     parser.add_argument("--token", default="", help="简单口令：客户端要带同样的 X-Token")
     parser.add_argument("--window", type=int, default=6,
                         help="滑动窗口：允许树莓派同时在飞的帧数（默认 6）")
+    parser.add_argument("--hand-model", default="",
+                        help="MediaPipe 手部关键点模型（hand_landmarker.task）；给了就每帧检手，"
+                             "手框随检测结果一起回给树莓派（cls=4）")
+    parser.add_argument("--hand-every", type=int, default=2,
+                        help="每隔几帧检测一次手（默认 2，省算力）")
     parser.add_argument("--stage-weights", default="",
                         help="阶段模型权重（可选，类别 step_0..step_3/complete）；"
                              "给了就每帧多跑一次，结果走下行帧预留槽")
@@ -403,6 +423,14 @@ def main() -> int:
         print(f"[错误] 找不到权重 {args.weights}")
         return 2
     load_model(args.weights, args.device, args.imgsz)
+    if args.hand_model:
+        try:
+            from server.hand_mp import HANDS, HandLandmarker
+            Handler.hand = HandLandmarker(args.hand_model)
+            print(f"[手部] 每 {max(1, args.hand_every)} 帧检一次，手框用 cls=4 回给树莓派")
+        except Exception as error:
+            print(f"[手部] 初始化失败（不影响主流程）：{error}")
+            Handler.hand = None
     if args.stage_weights:
         STAGE_ZONE["rect"] = tuple(args.stage_zone) if args.stage_zone else None
         load_stage_model(args.stage_weights, args.device, args.imgsz)
@@ -411,6 +439,7 @@ def main() -> int:
 
     Handler.imgsz, Handler.conf = args.imgsz, args.conf
     Handler.stage_conf = args.stage_confs
+    Handler.hand_every = max(1, args.hand_every)
     Handler.iou, Handler.device = args.iou, args.device
     Handler.window = max(1, min(int(args.window), 32))
     STATE["token"] = args.token

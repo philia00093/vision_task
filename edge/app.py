@@ -538,7 +538,22 @@ def main():
                 detections = tracker_parts.tick()      # 每帧都跑：预测补框，显示才连贯
                 # ---- 手部：肤色分割 + 卡尔曼跟踪，并把"手在各区域的占比"写回区域状态 ----
                 hands = []
-                if hand_tracker is not None:
+                # ① 电脑端 MediaPipe（21 点 → 手框）优先
+                #    两个来源：检测槽里的 cls=4，或者尾部 6 字节压缩手框（槽被零件占满时）
+                model_hand = getattr(tracker_parts, "hand_box", None)
+                if model_hand is None and tracker_parts is not None:
+                    remote_hand = tracker_parts.runner.remote
+                    if remote_hand is not None:
+                        raw_box = remote_hand.hand_box
+                        if raw_box:
+                            ox_, oy_ = last_offset
+                            sc_ = last_scale or 1.0
+                            model_hand = (raw_box[0] / sc_ + ox_, raw_box[1] / sc_ + oy_,
+                                          raw_box[2] / sc_ + ox_, raw_box[3] / sc_ + oy_)
+                if model_hand is not None:
+                    hands = [{"box": model_hand, "conf": 1.0, "track_id": -1,
+                              "trail": [], "predicted": False, "from": "mediapipe"}]
+                elif hand_tracker is not None:
                     raw_hands = hand_tracker.update(view)
                     # 只保留"在工作区附近"的手：木桌面、台灯臂这些肤色块离料盘很远，
                     # 直接按"手框与两区并集的重叠"过掉，免得乱框。
@@ -552,6 +567,7 @@ def main():
                     for hand in raw_hands:
                         if union is not None and hand_tracker.zone_ratio(hand["box"], union) < 0.3:
                             continue
+                        hand["from"] = "skin"
                         hands.append(hand)
                     for zone in tracker_zones.zones:
                         box = zone.get("box")
@@ -798,7 +814,8 @@ def main():
                     if hand.get("trail"):
                         draw_trail(view, hand["trail"], HAND_COLOR,
                                    thickness=max(2, args.trail_width - 1))
-                    draw_detection(view, hand["box"], f"hand {hand['conf']:.2f}",
+                    tag = "hand*" if hand.get("from") == "mediapipe" else "hand"
+                    draw_detection(view, hand["box"], f"{tag} {hand['conf']:.2f}",
                                    HAND_COLOR, font=label_font,
                                    thickness=args.line_width, top_margin=status_height)
 

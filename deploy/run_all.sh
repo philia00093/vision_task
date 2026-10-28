@@ -19,6 +19,8 @@ WEIGHTS="${WEIGHTS:-$ROOT/vision_yolo_train/runs/wersion_parts/weights/best.pt}"
 # 阶段模型（可选）：类别 step_0..step_3/complete；只采信装配区里的框
 STAGE_WEIGHTS="${STAGE_WEIGHTS:-$ROOT/vision_yolo_train/runs/steps_stage_best.pt}"
 STAGE_ZONE="${STAGE_ZONE:-60 62 344 344}"
+# 手部关键点（MediaPipe，21 点）：有模型文件就开
+HAND_MODEL="${HAND_MODEL:-$ROOT/vision_yolo_train/weights/hand_landmarker.task}"
 
 bold() { printf '\n\033[1;36m== %s ==\033[0m\n' "$*"; }
 ok()   { printf '  \033[32m✓\033[0m %s\n' "$*"; }
@@ -52,7 +54,10 @@ start_server() {
     [ -f "$WEIGHTS" ] || { bad "找不到权重 $WEIGHTS"; return 1; }
     extra=()
     if [ -n "$STAGE_WEIGHTS" ] && [ -f "$STAGE_WEIGHTS" ]; then
-        extra=(--stage-weights "$STAGE_WEIGHTS" --stage-zone $STAGE_ZONE)
+        extra+=(--stage-weights "$STAGE_WEIGHTS" --stage-zone $STAGE_ZONE)
+    fi
+    if [ -n "$HAND_MODEL" ] && [ -f "$HAND_MODEL" ]; then
+        extra+=(--hand-model "$HAND_MODEL" --hand-every 2)
     fi
     setsid nohup "$PY" -u "$ROOT/server/run_server.py" \
         --host 0.0.0.0 --port 8080 --imgsz 960 --device 0 --window 16 \

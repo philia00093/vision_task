@@ -44,6 +44,7 @@ class PartTracker:
                                  window=window, result_hold=result_hold)
         self.track = bool(track)          # False=完全不做跟踪
         self.exclude_rect = exclude_rect  # 这个矩形（装配区）里的零件不跟踪
+        self.hand_box = None             # 电脑端给的手框（cls=4），不跟踪
         self._raw: list = []             # 框内零件的原始检测（不跟踪）
         self.trail_len = max(int(trail_len), 2)
         self.track_max_age = max(int(track_max_age), 1)
@@ -118,6 +119,16 @@ class PartTracker:
         detections = [((x1 * inverse + dx, y1 * inverse + dy,
                         x2 * inverse + dx, y2 * inverse + dy), cls, conf)
                       for x1, y1, x2, y2, cls, conf in raw]
+        # cls=4 是电脑端 MediaPipe 手部关键点合成的手框：不参与零件跟踪，
+        # 单独存出来给上层画框/算占比（手是动的、形状会变，用普通轨迹反而乱）。
+        self.hand_box = None
+        kept = []
+        for box, cls_id, conf in detections:
+            if int(cls_id) == 4:
+                self.hand_box = box
+            else:
+                kept.append((box, cls_id, conf))
+        detections = kept
 
         if not self.track:                     # 完全关闭跟踪：只记录这一轮原始检测
             self._raw = [{"box": (int(b[0]), int(b[1]), int(b[2]), int(b[3])),

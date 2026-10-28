@@ -187,7 +187,8 @@ RESULT_HEAD = struct.Struct("<IBBBBI")
 STEP_BLOCK = struct.Struct("<4B")            # step + 3 字节保留
 FLAG_BLOCK = struct.Struct("<8B")            # 3 组布尔 + 5 字节保留
 TAIL_SIZE = 16                               # 尾部 16 字节（前 10 字节现在是 ACK 字段）
-TAIL_BLOCK = struct.Struct("<IIH6x")         # ack_seq, rcv_nxt, win（正好 16）
+# 尾部 16 字节：ack_seq(4) + rcv_nxt(4) + win(2) + 压缩手框(4×u8, 单位 4px) + 2 保留
+TAIL_BLOCK = struct.Struct("<IIH4B2x")
 ACK_PAYLOAD = struct.Struct("<IIH2x")        # ACK 帧载荷（12 字节）
 assert TAIL_BLOCK.size == TAIL_SIZE and ACK_PAYLOAD.size == 12
 
@@ -352,7 +353,7 @@ def _pack_slot(cls: int, valid: bool, conf, quad) -> bytes:
 
 
 def encode_result_frame(ref_seq: int, detections=(), step: int = STEP_UNKNOWN,
-                        flags=(0, 0, 0), hand=None, seq: int = 0,
+                        flags=(0, 0, 0), hand=None, hand_box=None, seq: int = 0,
                         cost_us: int = 0, ack_seq: int = 0, rcv_nxt: int = 0,
                         win: int = 0) -> bytes:
     """识别结果 → 一整帧（PC 侧调用），恒为 160 字节。
@@ -400,8 +401,13 @@ def encode_result_frame(ref_seq: int, detections=(), step: int = STEP_UNKNOWN,
 
     payload += STEP_BLOCK.pack(step & 0xFF, 0, 0, 0)
     payload += FLAG_BLOCK.pack(*[1 if flag else 0 for flag in flags], 0, 0, 0, 0, 0)
+    # 尾部 6 个保留字节里塞一个压缩手框（4 个 u8，单位 4px）：检测槽被零件占满时，
+    # 手框还能回给树莓派。全 0 表示"这一帧没有手"。
+    packed = [0, 0, 0, 0]
+    if hand_box is not None:
+        packed = [max(0, min(int(round(float(v) / 4.0)), 255)) for v in hand_box[:4]]
     payload += TAIL_BLOCK.pack(ack_seq & 0xFFFFFFFF, rcv_nxt & 0xFFFFFFFF,
-                               max(0, min(int(win), 0xFFFF)))
+                               max(0, min(int(win), 0xFFFF)), *packed)
 
     if len(payload) != RESULT_PAYLOAD_SIZE:              # 结构体改了长度就会在这里炸
         raise FrameError(f"结果载荷 {len(payload)} 字节，应为 {RESULT_PAYLOAD_SIZE}")
@@ -435,8 +441,10 @@ def parse_result_frame(frame: bytes) -> dict:
     offset += STEP_BLOCK.size
     b0, b1, b2, _f1, _f2, _f3, _f4, _f5 = FLAG_BLOCK.unpack_from(payload, offset)
     offset += FLAG_BLOCK.size
-    ack_seq, rcv_nxt, win = TAIL_BLOCK.unpack_from(payload, offset)
+    ack_seq, rcv_nxt, win, hx1, hy1, hx2, hy2 = TAIL_BLOCK.unpack_from(payload, offset)
     offset += TAIL_SIZE
+    hand_box = (None if not any((hx1, hy1, hx2, hy2))
+                else (hx1 * 4, hy1 * 4, hx2 * 4, hy2 * 4))
 
     if step != STEP_UNKNOWN and not STEP_RANGE[0] <= step <= STEP_RANGE[1]:
         raise FrameError(f"step={step} 不在 0 或 1~{STEP_RANGE[1]}")
@@ -449,7 +457,8 @@ def parse_result_frame(frame: bytes) -> dict:
             "ack_seq": int(ack_seq), "rcv_nxt": int(rcv_nxt), "win": int(win),
             "cost_us": cost_us, "cost_ms": cost_us / 1000.0,
             "detections": [_unpack_slot(slot) for slot in slots[:det_count]],
-            "hand": _unpack_slot(hand_raw) if hand_raw[1] else None}
+            "hand": _unpack_slot(hand_raw) if hand_raw[1] else None,
+            "hand_box": hand_box}
 
 
 def _unpack_slot(slot) -> dict:

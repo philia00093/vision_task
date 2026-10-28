@@ -206,6 +206,13 @@ class RemoteRunner:
             return tuple(self.result.get("flags", (0, 0, 0)))
 
     @property
+    def hand_box(self):
+        """电脑端 MediaPipe 给的手框（尾部 6 字节压缩传回来的），没有就是 None。"""
+        with self._lock:
+            box = (self.result or {}).get("hand_box")
+        return box
+
+    @property
     def hand(self):
         with self._lock:
             return self.result.get("hand")
