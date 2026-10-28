@@ -203,6 +203,7 @@ class HandFeed:
         self.conf = 0.0
         self.ok = False
         self.error = ""
+        self.last_ok = 0.0            # 最近一次成功拿到关键点的时间
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="hand-feed", daemon=True)
@@ -225,6 +226,8 @@ class HandFeed:
                     self.points = self.hands[0][0] if self.hands else []
                     self.conf = self.hands[0][1] if self.hands else 0.0
                     self.ok = bool(payload.get("ok"))
+                    if self.ok:
+                        self.last_ok = time.time()
                     self.error = ""
             except Exception as error:
                 with self._lock:

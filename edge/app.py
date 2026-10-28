@@ -25,7 +25,7 @@ from edge.drawing import (_measure_label, draw_area_verdict, draw_detection, dra
                           draw_text_box, load_cjk_font)
 from edge.framebuffer import FbWriter
 from edge.grabber import FrameGrabber
-from edge.hand import HandFeed, HandTracker, draw_keypoints
+from edge.hand import HandFeed, draw_keypoints
 from edge.imaging import contours_to_boxes, prepare_detect_input, save_image, take_right
 from edge.parts import PartTracker
 from edge.stage_match import CascadeStageMatcher, SiftStageMatcher, StageMatcher
@@ -255,7 +255,6 @@ def main():
         # 和上面零件跟踪并列共存：一个管"每件零件在哪"，一个管"装到第几步"，互不等待。
         stage_worker = None          # 后台识别线程（stage 没启用就是 None）
         part_counter = None          # 数零件定阶段（4 类零件少几个 = 第几步）
-        hand_tracker = None          # 手部检测+跟踪（肤色分割 + 卡尔曼）
         hand_feed = None             # 电脑端 21 关键点（MediaPipe）低速拉取
         touch = None                 # 触摸屏（屏幕右下角的按钮用）
         screw = None                 # 支撑杆拧紧计转
@@ -344,15 +343,6 @@ def main():
         print(f"手部关键点：GET {args.server_url.rstrip('/')}/hand（{args.hand_hz:g}Hz）")
 
     # ---- 手部跟踪（本机算，不占网络带宽）----
-    if not args.no_hand:
-        hand_tracker = HandTracker(min_area_ratio=args.hand_min_area,
-                                   scale=args.hand_scale,
-                                   max_hands=args.hand_max)
-        print(f"手部跟踪：肤色分割 + 卡尔曼 | 最小面积 {args.hand_min_area*100:.1f}% "
-              f"| 掩码缩放 {args.hand_scale:g}")
-    else:
-        hand_tracker = None
-        print("手部跟踪：已用 --no-hand 关闭")
 
     # ---- 触摸屏 + 支撑杆计转（都在树莓派本地跑，不依赖电脑）----
     screw = ScrewTurns(min_turns=args.screw_min_turns, target_max=args.screw_max_turns,
@@ -573,22 +563,6 @@ def main():
                 if model_hand is not None:
                     hands = [{"box": model_hand, "conf": 1.0, "track_id": -1,
                               "trail": [], "predicted": False, "from": "mediapipe"}]
-                elif hand_tracker is not None:
-                    raw_hands = hand_tracker.update(view)
-                    # 只保留"在工作区附近"的手：木桌面、台灯臂这些肤色块离料盘很远，
-                    # 直接按"手框与两区并集的重叠"过掉，免得乱框。
-                    union = None
-                    boxes_ok = [z["box"] for z in tracker_zones.zones if z.get("box")]
-                    if boxes_ok:
-                        ux1 = min(b[0] for b in boxes_ok); uy1 = min(b[1] for b in boxes_ok)
-                        ux2 = max(b[2] for b in boxes_ok); uy2 = max(b[3] for b in boxes_ok)
-                        mx = (ux2 - ux1) * 0.25; my = (uy2 - uy1) * 0.25
-                        union = (ux1 - mx, uy1 - my, ux2 - ux1 + 2 * mx, uy2 - uy1 + 2 * my)
-                    for hand in raw_hands:
-                        if union is not None and hand_tracker.zone_ratio(hand["box"], union) < 0.3:
-                            continue
-                        hand["from"] = "skin"
-                        hands.append(hand)
                 # 有 21 关键点时，用关键点外接框算区域占比（比肤色框准，且不画框）
                 if hands_kp:
                     hands = []
@@ -602,11 +576,15 @@ def main():
                         if box is None:
                             continue
                         zx1, zy1, zx2, zy2 = box
-                        rect = (zx1, zy1, zx2 - zx1, zy2 - zy1)
-                        # 手里最大的一只决定占比（两只手同时伸进来取最大）
-                        zone["hand_ratio"] = max(
-                            (hand_tracker.zone_ratio(h["box"], rect) for h in hands),
-                            default=0.0)
+                        best = 0.0
+                        for hand in hands:
+                            hx1, hy1, hx2, hy2 = hand["box"]
+                            ix1, iy1 = max(hx1, zx1), max(hy1, zy1)
+                            ix2, iy2 = min(hx2, zx2), min(hy2, zy2)
+                            area = max(1e-6, (hx2 - hx1) * (hy2 - hy1))
+                            if ix2 > ix1 and iy2 > iy1:
+                                best = max(best, (ix2 - ix1) * (iy2 - iy1) / area)
+                        zone["hand_ratio"] = best
                 # ---- 触摸按钮 + 支撑杆计转（本机逻辑，不走网络）----
                 if touch is not None and screw is not None:
                     vh, vw = view.shape[:2]
@@ -675,7 +653,8 @@ def main():
                                 args._dbg = now_stage
                             except Exception:
                                 pass
-                            print(f"[螺丝] Δ{screw.angle:+.1f}° conf {screw.conf:.2f} "
+                            delta_now = screw.angle if screw.angle is not None else 0.0
+                            print(f"[螺丝] Δ{delta_now:+.1f}° conf {screw.conf:.2f} "
                                   f"turns {screw.turns:.2f}", flush=True)
                         if screw.state != before and screw.state in (OK, NG):
                             print(f"[螺丝] 停手：{screw.describe()}", flush=True)
