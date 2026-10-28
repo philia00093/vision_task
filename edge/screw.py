@@ -196,6 +196,82 @@ def find_tip_by_motion(prev_gray, cur_gray, center=None, min_frac: float = 0.25)
     return float(x), float(y)
 
 
+def polar_rotation(prev_gray, cur_gray, center=None, angle_bins: int = 360,
+                   radius_bins: int = 64):
+    """极坐标 + 循环相位相关测旋转。
+
+    **OpenCV 的 warpPolar 约定**（实测确认，别猜）：dsize=(宽,高) 里
+    **行 = 角度**、**列 = 半径**。所以：
+    · 绕轴转 φ 度 = 极坐标图沿"行"方向循环平移 φ*(angle_bins/360) 行
+    · 每个角度行先减掉自己的均值（去掉铜盘这种沿半径恒定的成分），
+      剩下的就是"杆在哪个角度"的信号
+    · 用 FFT 做**循环**相关（角度轴首尾相接，线性相关会把环绕算错）
+    """
+    if prev_gray is None or cur_gray is None or cur_gray.size == 0:
+        return None, 0.0
+    height, width = cur_gray.shape[:2]
+    cx, cy = (width * 0.5, height * 0.5) if center is None else center
+    max_radius = 0.49 * min(width, height)
+    size = (radius_bins, angle_bins)
+    try:
+        pa = cv2.warpPolar(prev_gray.astype(np.float32), size, (float(cx), float(cy)),
+                           float(max_radius), cv2.WARP_POLAR_LINEAR)
+        pb = cv2.warpPolar(cur_gray.astype(np.float32), size, (float(cx), float(cy)),
+                           float(max_radius), cv2.WARP_POLAR_LINEAR)
+    except Exception:
+        return None, 0.0
+    lo, hi = int(radius_bins * 0.20), int(radius_bins * 0.85)
+    pa = pa[:, lo:hi]
+    pb = pb[:, lo:hi]
+    pa = pa - pa.mean(axis=1, keepdims=True)
+    pb = pb - pb.mean(axis=1, keepdims=True)
+    fa = np.fft.fft2(pa)
+    fb = np.fft.fft2(pb)
+    cross = fa * np.conj(fb)
+    denom = np.abs(cross)
+    denom[denom < 1e-9] = 1e-9
+    corr = np.abs(np.fft.ifft2(cross / denom))
+    profile = corr.mean(axis=1)                 # 沿半径列平均 → 每个"行位移"的能量
+    peak = int(np.argmax(profile))
+    conf = float(profile[peak] / (profile.mean() + 1e-9))
+    shift = peak if peak <= angle_bins // 2 else peak - angle_bins
+    return shift * (360.0 / angle_bins), conf
+
+
+def find_two_ends(prev_gray, cur_gray, min_frac: float = 0.2):
+    """从帧间差里找杆的**两端**：先取动得最多的点，再取它正对面动得第二多的点。
+
+    杆绕中点转，两端速度相反，所以帧间差上会有两个峰。两个点连线方向 = 杆的方向，
+    中点 = 轴心 —— 不需要事先知道轴心在哪。
+    """
+    if prev_gray is None or cur_gray is None:
+        return None
+    height, width = cur_gray.shape[:2]
+    cx, cy = width * 0.5, height * 0.5
+    limit = min(width, height) * 0.5
+    diff = np.abs(cur_gray.astype(np.float32) - prev_gray.astype(np.float32))
+    diff = cv2.GaussianBlur(diff, (5, 5), 0)
+    yy, xx = np.mgrid[0:height, 0:width]
+    radius = np.hypot(xx - cx, yy - cy)
+    score = diff * radius
+    score[radius < min_frac * limit] = 0
+    if float(score.max()) < 40.0:
+        return None
+    y1, x1 = np.unravel_index(int(np.argmax(score)), score.shape)
+    # 抹掉第一端附近，再找"对面"的峰
+    blocked = score.copy()
+    blocked[max(0, y1 - 12):y1 + 12, max(0, x1 - 12):x1 + 12] = 0
+    ux, uy = x1 - cx, y1 - cy
+    norm = math.hypot(ux, uy) + 1e-6
+    ux, uy = ux / norm, uy / norm
+    projection = (xx - cx) * ux + (yy - cy) * uy          # 沿"第一端方向"的投影
+    blocked[projection > -0.15 * norm] = 0                # 只留正对面那半
+    if float(blocked.max()) < 20.0:
+        return None
+    y2, x2 = np.unravel_index(int(np.argmax(blocked)), blocked.shape)
+    return (float(x1), float(y1)), (float(x2), float(y2))
+
+
 def track_tip(prev_gray, cur_gray, tip):
     """LK 光流跟一个点。返回新位置或 None（跟丢）。"""
     if tip is None or prev_gray is None or cur_gray is None:
@@ -299,7 +375,8 @@ class ScrewTurns:
         self.marker_hsv = marker_hsv            # (lo, hi)；给了就走色标，否则走偏心运动
         self.mode = "marker" if marker_hsv else "motion"
         self._prev_gray = None                  # 上一帧 ROI 灰度
-        self._tip = None                        # 正在跟的顶点（偏心杆头）
+        self._tip = None                        # 杆的一端（A）
+        self._tip2 = None                       # 杆的另一端（B）
         self.center = None                      # 实测出来的转轴（拟合圆圆心）
         self._path: list = []                   # 顶点轨迹（用来拟合圆心）
         self._dir = 0                           # 旋转方向锁（+1/-1，0=还没定）
@@ -328,6 +405,7 @@ class ScrewTurns:
         self._last_hist = None
         self._prev_gray = None
         self._tip = None
+        self._tip2 = None
         self._path = []
         self.center = None
         self._dir = 0
@@ -374,81 +452,28 @@ class ScrewTurns:
                 self.last_move = now
             return
 
-        # ② 没色标：**只跟顶点**（偏心杆头）
-        #    杆头绕轴画圆 → 角度 = atan2(顶点 - 轴心)，相邻帧角度差解卷绕累计。
-        #    之前用"整块运动的圆周平均"，噪声区域多、方向乱，圈数会飙；
-        #    现在只维护一个点，噪声完全可控。
+        # ② 没色标：**极坐标相位相关**（旋转 → 角度轴平移，用全部像素）
         gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY) if roi.ndim == 3 else roi
-        height, width = gray.shape[:2]
-        # 转轴：优先用轨迹拟合出来的圆心，没有就用 ROI 中心（后面会自己修正）
-        if self.center is not None:
-            cx, cy = self.center
-        else:
-            cx, cy = width * 0.5, height * 0.5
-        limit = min(width, height) * 0.5
-        tip = None
-        if self._tip is not None:
-            tip = track_tip(self._prev_gray, gray, self._tip)
-            if tip is not None:
-                # 校验：顶点到轴心的半径应该基本不变（在圆周上）
-                ratio = math.hypot(tip[0] - cx, tip[1] - cy) / max(
-                    math.hypot(self._tip[0] - cx, self._tip[1] - cy), 1e-6)
-                if not (0.75 <= ratio <= 1.33):
-                    tip = None
-        if tip is None:                              # 跟丢/刚启动：重新找
-            tip = find_tip_by_motion(self._prev_gray, gray, (cx, cy))
-            if tip is not None:
-                self._last_angle = None              # 重新定基准，避免跳变被当成转动
+        self._prev_gray_size = gray.shape[:2]
+        delta, conf = polar_rotation(self._prev_gray, gray)
         self._prev_gray = gray
-        if tip is None:
+        self.conf = conf
+        if delta is None or conf < 0.08:
             self.lost += 1
             return
-        # 注意：位移要在**更新 _tip 之前**算，否则自己跟自己比恒为 0（刚踩过）
-        moved_px = (0.0 if self._tip is None
-                    else math.hypot(tip[0] - self._tip[0], tip[1] - self._tip[1]))
-        self._tip = tip
         self.lost = 0
-        # 记录轨迹 → 够了就拟合一次圆心（拟合成功且残差小才采用）
-        self._path.append(tip)
-        if len(self._path) > 60:
-            del self._path[:len(self._path) - 60]
-        if len(self._path) >= 12 and len(self._path) % 4 == 0:
-            fitted = fit_circle(self._path)
-            if fitted is not None:
-                fcx, fcy, fr, fres = fitted
-                if fres < 3.0 and fr > 0.12 * limit:
-                    self.center = (fcx, fcy)
-                    if self._last_angle is not None:
-                        # 换轴心后角度基准跟着改，避免一次跳变被算成转动
-                        self._last_angle = math.degrees(
-                            math.atan2(tip[1] - fcy, tip[0] - fcx))
-                    cx, cy = self.center
-        radius = math.hypot(tip[0] - cx, tip[1] - cy)
-        if radius < 0.15 * limit:                    # 太靠轴心，角度不准
-            return
-        # 顶点实际位移太小（亚像素抖动）就不算转动：光流在噪声上也会漂 0.5~1 px，
-        # 不加这道门 300 帧静止画面能累出 0.3 圈。
-        if moved_px < 1.2:
-            return
-        angle = math.degrees(math.atan2(tip[1] - cy, tip[0] - cx))
-        self.angle = angle
-        self.conf = 1.0
-        if self._last_angle is None:
-            self._last_angle = angle
-            return
-        delta = (angle - self._last_angle + 180.0) % 360.0 - 180.0
-        self._last_angle = angle
+        self.angle = float(delta)
         if abs(delta) > self.max_step_deg:
             return
         if abs(delta) < DEFAULT_MIN_MOVE_DEG:
             return
         self._signed += delta
         if self._dir == 0:
-            if abs(self._signed) > 20.0:            # 累计够 20° 才认方向
+            if abs(self._signed) > 20.0:
                 self._dir = 1 if self._signed > 0 else -1
             else:
-                return                              # 方向没定之前不计数（噪声阶段）
-        if delta * self._dir < 0 and abs(delta) < 30.0:
+                return
+        if delta * self._dir < 0 and abs(delta) < 45.0:
             return
         self._accum += abs(delta)
         self.turns = self._accum / 360.0
