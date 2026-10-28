@@ -246,3 +246,49 @@ def find_part(image, box, search: float = DEFAULT_SEARCH, min_side: int = 8):
         "circle_area": float(np.pi * radius * radius),
         "window": (X1, Y1, X2 - X1, Y2 - Y1),
     }
+
+
+# ============================================================================
+# 罗盘正反检测
+# ============================================================================
+# 实测（正/反各 3 张，同一位置同光照）：**中心毂里的"黑色区域"占比**差异最大
+#   正面（凹坑）  0.431 / 0.434 / 0.434
+#   反面（凸台）  0.301 / 0.302 / 0.292
+# 组间差 0.13，组内波动 ±0.01 —— 阈值 0.37 分得很干净。
+# 用"占比"而不是绝对亮度：灯泡亮一点、换个位置都只影响整体，占比基本不变。
+COMPASS_SIDE_RATIO = 0.37
+
+
+def compass_side(image, box, black_ratio_threshold: float = COMPASS_SIDE_RATIO):
+    """判断罗盘是正面朝上还是反面朝上。
+
+    只看**中心毂里的黑色区域占比**：
+    · 正面：毂是凹进去的深坑 → 黑区大（约 0.43）
+    · 反面：毂是凸台、中间黑孔小 → 黑区小（约 0.30）
+    Otsu 自动切阈值，所以不挑曝光；用"占比"而不是亮度绝对值，换位置也不受影响。
+
+    返回 (label, ratio)：
+        label = "front" / "back" / None（没检出、太小、贴边）
+    """
+    if image is None or box is None:
+        return None, 0.0
+    height, width = image.shape[:2]
+    x1, y1, x2, y2 = (float(v) for v in box)
+    cx, cy = (x1 + x2) * 0.5, (y1 + y2) * 0.5
+    size = max(x2 - x1, y2 - y1)
+    if size < 40:
+        return None, 0.0
+    if cx - size * 0.5 < 0 or cy - size * 0.5 < 0 or \
+            cx + size * 0.5 >= width or cy + size * 0.5 >= height:
+        return None, 0.0
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY).astype(np.float32) \
+        if image.ndim == 3 else image.astype(np.float32)
+    yy, xx = np.mgrid[0:height, 0:width]
+    hub = np.hypot(xx - cx, yy - cy) <= size * 0.16
+    values = gray[hub]
+    if values.size < 60:
+        return None, 0.0
+    sample = np.clip(values, 0, 255).astype(np.uint8).reshape(-1, 1)
+    threshold, _ = cv2.threshold(sample, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    black_ratio = float((values < threshold).mean())
+    return ("front" if black_ratio >= black_ratio_threshold else "back"), black_ratio

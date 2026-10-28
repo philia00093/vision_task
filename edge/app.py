@@ -18,7 +18,7 @@ from edge.args import build_parser
 from edge.camera import fourcc_str, open_camera, probe_modes
 from edge.capture import CaptureDeck, on_mouse
 from edge.constants import CAPTURE_SPECS, DEFAULT_TRAY_MIN_FILL, DEFAULT_YOLO_WEIGHTS, DEFAULT_ZONES_FILE, GREEN_MIN_FILL_RATIO, HAND_COLOR, IMAGE_SUFFIXES, PART_COLOR, TRAIL_COLOR, WINDOW, ZONE_COLORS
-from edge.defects import AreaChecker, find_part
+from edge.defects import AreaChecker, compass_side, find_part
 from edge.drawing import (_measure_label, draw_area_verdict, draw_detection, draw_machine_state,
                           row_y,
                           draw_overlay, draw_stage, draw_trail, draw_zone,
@@ -260,6 +260,7 @@ def main():
         screw = None                 # 支撑杆拧紧计转
         screw_rect = None            # 按钮在 view 坐标里的位置
         area_check = None            # 零件面积检查（缺陷识别 1）
+        side_result = None           # 罗盘正反（缺陷识别 2）
         if args.no_stage:
             print("阶段识别：已用 --no-stage 关闭")
         else:
@@ -597,7 +598,18 @@ def main():
                                 if ix2 > ix1 and iy2 > iy1:
                                     best = max(best, (ix2 - ix1) * (iy2 - iy1) / area)
                             zone["hand_ratio"] = best
-                    # ---- 触摸按钮 + 支撑杆计转（本机逻辑，不走网络）----
+                    # ---- 罗盘正反：有 compass 检测就判一次（相对亮度比，抗光照）----
+                if screw is not None:
+                    target = next((d for d in detections
+                                   if d["name"] == "compass" and not d.get("predicted")), None)
+                    if target is not None:
+                        label, ratio = compass_side(view, target["box"])
+                        if label is not None:
+                            side_result = (label, ratio)
+                    else:
+                        side_result = None
+
+                # ---- 触摸按钮 + 支撑杆计转（本机逻辑，不走网络）----
                     if touch is not None and screw is not None:
                         vh, vw = view.shape[:2]
                         btn_w, btn_h = 420, 120
@@ -950,11 +962,19 @@ def main():
                         draw_text_box(view, btn_text, bx1 + 18, by1 + 18, color,
                                       font=label_font)
 
-                    if area_check is not None and area_check.judged > 0 and area_visible:
-                        # 固定占第 1 行（第 0 行是工位状态），行高固定 → 不会重叠
-                        draw_area_verdict(view, area_check.label(), ok=area_check.ok,
-                                          font=verdict_font or label_font,
-                                          top=status_height, row=1)
+                if area_check is not None and area_check.judged > 0 and area_visible:
+                    # 固定占第 1 行（第 0 行是工位状态），行高固定 → 不会重叠
+                    draw_area_verdict(view, area_check.label(), ok=area_check.ok,
+                                      font=verdict_font or label_font,
+                                      top=status_height, row=1)
+
+                # 罗盘正反：第 3 行（0=状态 1=零件完整性 2=装配步数）
+                if side_result is not None:
+                    side_label, side_ratio = side_result
+                    side_text = ("罗盘 正面 ✓" if side_label == "front" else "罗盘 装反 ✗")
+                    draw_area_verdict(view, side_text, ok=(side_label == "front"),
+                                      font=verdict_font or label_font,
+                                      top=status_height, row=3)
 
                     # 阶段标签贴「装配区」框的右上角（左上角是区域名），和零件框互不遮挡
                     if stage is not None:
