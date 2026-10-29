@@ -49,6 +49,9 @@ class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     pipeline: "InferPipeline | None" = None       # 推理流水线（main() 里建好挂上来）
     stage_conf: float = 0.35                       # 阶段模型的置信度阈值
+    stage_every: int = 10                          # 阶段模型每隔几帧跑一次（装配步骤变得慢）
+    stage_frame: int = 0                           # 帧计数（--stage-every）
+    last_stage = None                              # 上一次阶段结果（跳过的帧沿用它）
     hand = None                                    # MediaPipe 手部关键点（有模型才建）
     hand_frame = 0                                 # 手部检测的帧计数（--hand-every）
     imgsz = 640
@@ -244,10 +247,15 @@ class Handler(BaseHTTPRequestHandler):
                         break
             except Exception as error:                    # 判定失败不能拖垮整帧推理
                 print(f"[罗盘] 判定失败：{type(error).__name__}: {error}")
-            # 阶段模型（如果有）：结果放进下行帧的预留槽，cls=阶段号、box=框
-            stage = None
+            # 阶段模型（如果有）：结果放进下行帧的预留槽，cls=阶段号、box=框。
+            # 装配步骤几十毫秒才变一次，没必要每帧都推一遍：每 --stage-every 帧跑一次，
+            # 中间那些帧沿用上次结果（下行帧照样带 step，树莓派那边看不出差别）。
+            stage = Handler.last_stage
             if STAGE.get("model") is not None:
-                stage = infer_stage(image, self.imgsz, self.stage_conf, self.device)
+                Handler.stage_frame += 1
+                if Handler.stage_frame % max(1, Handler.stage_every) == 0:
+                    stage = infer_stage(image, self.imgsz, self.stage_conf, self.device)
+                    Handler.last_stage = stage
             # 下行帧里电脑端说了算的三个字段（现在默认 0/全0/无，可用 POST /stage 临时改）
             step, flags, hand = STATE["step"], STATE["flags"], STATE["hand"]
             if stage is not None:
@@ -448,6 +456,8 @@ def main() -> int:
                              "给了就每帧多跑一次，结果走下行帧预留槽")
     parser.add_argument("--stage-confs", type=float, default=0.35,
                         help="阶段模型置信度阈值")
+    parser.add_argument("--stage-every", type=int, default=10,
+                        help="阶段模型每隔几帧跑一次（默认 10：步骤变化很慢，省算力）")
     parser.add_argument("--stage-zone", type=int, nargs=4, metavar=("X", "Y", "W", "H"),
                         default=None,
                         help="只采信中心落在这个矩形里的阶段框（装配区，原图坐标）")
@@ -479,6 +489,7 @@ def main() -> int:
 
     Handler.imgsz, Handler.conf = args.imgsz, args.conf
     Handler.stage_conf = args.stage_confs
+    Handler.stage_every = max(1, args.stage_every)
     Handler.hand_every = max(1, args.hand_every)
     Handler.iou, Handler.device = args.iou, args.device
     Handler.window = max(1, min(int(args.window), 32))

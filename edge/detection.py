@@ -69,6 +69,7 @@ class RemoteRunner:
                  wire_format=DEFAULT_WIRE, window=6, sender_proc=True):
         self.sender_proc = bool(sender_proc)
         self.sender = None                    # 独立进程发送器（见 sender_proc.py）
+        self._sender_errors = 0
         self.url = url.rstrip("/")
         self.token = token
         self.quality = int(quality)
@@ -263,7 +264,13 @@ class RemoteRunner:
 
     def _drain_proc(self) -> None:
         """把子进程回来的结果收进来（保持和本进程发送完全一致的状态）。"""
-        for ref_seq, boxes, hand_box, hand, cost_ms, rtt in self.sender.drain():
+        results = self.sender.drain()
+        # 失败的请求不会回结果，窗口也得前进，否则 inflight 一路虚涨
+        failed = self.sender.errors - self._sender_errors
+        if failed > 0:
+            self._sender_errors = self.sender.errors
+            self.acked += failed
+        for ref_seq, boxes, hand_box, hand, cost_ms, rtt in results:
             with self._lock:
                 self.acked += 1
                 self._rtt_sum += rtt

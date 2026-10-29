@@ -180,6 +180,7 @@ class ProcessSender:
         self.dropped = 0
         self.errors = 0
         self.closed = False
+        self.last_error = ""
 
     # ------------------------------------------------------------ 主进程接口
     def _start(self, height: int, width: int) -> None:
@@ -244,7 +245,7 @@ class ProcessSender:
                 break
             if item[0] == -1:                        # 子进程报错
                 self.errors += 1
-                self.error_text = item[1]
+                self.last_error = item[1]
                 continue
             self.acked += 1
             out.append(item)

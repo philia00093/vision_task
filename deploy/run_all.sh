@@ -55,10 +55,10 @@ start_server() {
     [ -f "$WEIGHTS" ] || { bad "找不到权重 $WEIGHTS"; return 1; }
     extra=()
     if [ -n "$STAGE_WEIGHTS" ] && [ -f "$STAGE_WEIGHTS" ]; then
-        extra+=(--stage-weights "$STAGE_WEIGHTS" --stage-zone $STAGE_ZONE)
+        extra+=(--stage-weights "$STAGE_WEIGHTS" --stage-zone $STAGE_ZONE --stage-every 10)
     fi
     if [ -n "$HAND_MODEL" ] && [ -f "$HAND_MODEL" ]; then
-        extra+=(--hand-model "$HAND_MODEL" --hand-every 2)
+        extra+=(--hand-model "$HAND_MODEL" --hand-every 4)
     fi
     setsid nohup "$PY" -u "$ROOT/server/run_server.py" \
         --host 0.0.0.0 --port 8080 --imgsz 960 --device 0 --window 16 \
