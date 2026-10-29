@@ -55,6 +55,7 @@ class PartTracker:
         self.next_id = 1
         self.error = ""
         self.last_cost_ms = 0.0                # 上次 YOLO 的耗时，用来在状态栏显示
+        self.last_seq = 0                      # 最近一次提交给电脑的帧号（远程后端才有）
         self.frame_size: tuple | None = None   # 最近一次检测帧的尺寸（给卡尔曼做夹取用）
 
     @property
@@ -108,6 +109,9 @@ class PartTracker:
             self.runner.net = None
             return
         self.last_cost_ms = (time.time() - start) * 1000.0
+        # 记下"这一帧"在电脑端对应的帧号：播放缓冲靠它把框和画面对齐。
+        remote_runner = self.runner.remote
+        self.last_seq = int(remote_runner.last_submitted_seq) if remote_runner is not None else 0
         # 卡尔曼夹取用的是**整幅画面**的尺寸，不是裁剪后的模型输入尺寸
         if view_size is not None:
             self.frame_size = (int(view_size[0]), int(view_size[1]))
@@ -278,6 +282,53 @@ class PartTracker:
             tracked = self._tick_tracked()
             return tracked + [dict(item) for item in self._raw]
         return self._tick_tracked()
+
+    def frame_detections(self, seq: int, scale=1.0, offset=(0.0, 0.0)):
+        """取**指定帧**的检测框（view 坐标），没有就返回 None。
+
+        为什么需要它：屏幕上放的是 20 帧前的画面（播放缓冲），而卡尔曼是把
+        "现在"外推出来的。外推用的检测比画面本身还晚 0.3~0.9 秒（网络+推理往返），
+        零件一动，框就跑到零件前面去了 —— 看起来就是"跟踪不准"。
+        这里改成：那一帧是几号，就用几号那一帧的结果，框和画面严格对齐；
+        只有结果还没回来（往返比缓冲还慢）时才退回外推。
+        """
+        remote_runner = self.runner.remote
+        if remote_runner is None or not seq:
+            return None
+        raw = remote_runner.boxes_for(int(seq))
+        if raw is None:                      # 还没有这一帧的记录（不是"这一帧没东西"）
+            return None
+        inverse = 1.0 / scale if scale else 1.0
+        dx, dy = float(offset[0]), float(offset[1])
+        rect = self.exclude_rect
+        out: list[dict] = []
+        for x1, y1, x2, y2, cls_id, conf in raw:
+            if int(cls_id) == 4:                 # 手框：不显示
+                continue
+            box = (x1 * inverse + dx, y1 * inverse + dy,
+                   x2 * inverse + dx, y2 * inverse + dy)
+            cx, cy = (box[0] + box[2]) / 2.0, (box[1] + box[3]) / 2.0
+            if rect is not None:
+                ex1, ey1, ex2, ey2 = rect
+                if ex1 <= cx <= ex2 and ey1 <= cy <= ey2:
+                    continue                     # 装配区里的零件不画
+            # 轨迹线借用"当前离它最近的同类别轨迹"，不然前后帧之间轨迹会断
+            trail, track_id = None, -1
+            best = None
+            for tid, track in self.tracks.items():
+                if track.cls_id != int(cls_id):
+                    continue
+                tx, ty = track.center
+                d2 = (tx - cx) ** 2 + (ty - cy) ** 2
+                if best is None or d2 < best:
+                    best, track_id = d2, tid
+            if track_id >= 0:
+                trail = self.trails.get(track_id)
+            out.append({"box": (int(box[0]), int(box[1]), int(box[2]), int(box[3])),
+                        "name": self.names.get(int(cls_id), f"cls{int(cls_id)}"),
+                        "conf": float(conf), "track_id": track_id,
+                        "trail": trail, "predicted": False})
+        return out
 
     def _tick_tracked(self) -> list[dict]:
         """每一帧都调用：把轨迹推进到当前时刻，返回可以立刻绘制的列表。

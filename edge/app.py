@@ -385,10 +385,12 @@ def main():
     assembled_step = 0               # 已经确认完成的装配步数（手离开物料区时锁定）
     material_occluded = False        # 上一帧物料区是否被遮
     sync_hits = sync_misses = 0
+    sync_matched = sync_fallback = 0   # 帧↔框对齐命中 / 退回外推
     display_stamp = 0.0
     display_seq = -1                 # 已经显示到哪一帧：只许往前，不许倒退
     play_seq = 0                     # 入队用的本地帧号（不依赖网络是否发出去）
     last_display = None              # 上一帧显示内容，乱序时复用它而不是跳回实时帧
+    last_matched = None              # 上一帧对齐到的检测（水位不足时复用）
     # ---- 接收缓冲的"一次性预充" ----
     # 启动阶段先攒够 --preroll 帧（约 0.1~0.3 秒）再开始出图，避免开局抖动/空跳；
     # 攒够之后这个判断就永久关掉，不再影响后续显示。
@@ -511,6 +513,7 @@ def main():
 
                 # ---------------- 零件：每 --yolo-interval 帧跑一次 YOLO + 每帧卡尔曼预测 ----
                 submitted_now = False
+                submit_seq = 0                     # 这一帧在电脑端的帧号（没提交就是 0）
                 if detect and tracker_parts is not None:
                     # 两种节流：按帧数（--yolo-interval）或按时间（--infer-fps）。
                     # 链路差的时候按帧数塞会把 TCP 窗口灌满，帧就变成"一阵一阵到"，
@@ -540,6 +543,7 @@ def main():
                         tracker_parts.detect(detect_input, detect_scale, offset,
                                              view_size=(view.shape[1], view.shape[0]))
                         submitted_now = True
+                        submit_seq = getattr(tracker_parts, "last_seq", 0) or 0
                         # --snapshot + http 后端：结果要一个来回才到，单帧抓图会存出"没框"的图。
                         # 这里再提交几次直到拿到结果（只影响一次性抓图，实时预览不受影响）。
                         if args.snapshot and tracker_parts.runner.remote is not None:
@@ -771,7 +775,8 @@ def main():
                     play_seq += 1
                     if True:
                         now_t = frame_stamp or time.time()
-                        sync_ring[play_seq] = (view.copy(), detections, now_t)
+                        sync_ring[play_seq] = (view.copy(), detections, now_t,
+                                               submit_seq, last_scale, last_offset)
                         # 按时间淘汰（留够覆盖 RTT 的历史），再按帧数兜底防爆内存
                         limit = now_t - max(args.sync_seconds, 0.2)
                         while sync_ring and next(iter(sync_ring.values()))[2] < limit:
@@ -895,12 +900,28 @@ def main():
                             print(f"[sync] 缓冲就绪：{len(sync_ring)} 帧，开始出队", flush=True)
                     if len(sync_ring) >= args.dequeue_at:
                         seq_key, entry = sync_ring.popitem(last=False)   # 最老的一帧
-                        view, detections, display_stamp = entry
+                        view, detections, display_stamp = entry[0], entry[1], entry[2]
                         display_seq = seq_key
+                        # ---- 帧↔框对齐：这一帧是几号，就用几号那一帧的检测 ----
+                        # 只有结果还没回来（往返比缓冲慢）时才用卡尔曼外推补。
+                        frame_seq = entry[3] if len(entry) > 3 else 0
+                        matched = (tracker_parts.frame_detections(frame_seq, entry[4], entry[5])
+                                   if frame_seq else None)
+                        if matched is not None:
+                            detections = matched
+                            last_matched = matched
+                            sync_matched += 1
+                        elif last_matched is not None:
+                            detections = last_matched     # 这帧没提交/结果没回：沿用上一帧
+                            sync_fallback += 1
+                        else:
+                            sync_fallback += 1
                         last_display = entry
                         sync_hits += 1
                     elif last_display is not None:
-                        view, detections, display_stamp = last_display     # 水位不足：保持
+                        view, detections, display_stamp = last_display[0], last_display[1], last_display[2]
+                        if last_matched is not None:
+                            detections = last_matched
                         sync_misses += 1
 
                 if detect:
@@ -1017,8 +1038,12 @@ def main():
                                    f" 迟到 {remote_now.stale_results}")
                         hit = (sync_hits / max(sync_hits + sync_misses, 1) * 100.0
                                if (sync_hits + sync_misses) else 0.0)
+                        align = (sync_matched / max(sync_matched + sync_fallback, 1) * 100.0
+                                 if (sync_matched + sync_fallback) else 0.0)
+                        sync_matched = sync_fallback = 0      # 只统计这一段的对齐率
                         print(f"[fps] 主循环 {fps_now:.1f} fps | 画面滞后 {lag_ms:.0f}ms"
                               f"（含网络往返）{net} | 同步命中 {hit:.0f}%"
+                              f" | 帧框对齐 {align:.0f}%"
                               f" | 队列 {len(sync_ring)}帧"
                               f" | 已处理 {frame_count} 帧", flush=True)
                 gray = None

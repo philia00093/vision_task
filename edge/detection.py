@@ -18,7 +18,7 @@ import socket
 import threading
 import http.client
 import urllib.parse
-from collections import deque
+from collections import OrderedDict, deque
 from pathlib import Path
 
 from edge.constants import DEFAULT_INFER_BACKEND, DEFAULT_JPEG_QUALITY, DEFAULT_PART_NAMES, DEFAULT_SERVER_TIMEOUT, DEFAULT_SERVER_URL, DEFAULT_WIRE, DEFAULT_YOLO_CONF, DEFAULT_YOLO_IMGSZ, DEFAULT_YOLO_IOU
@@ -91,6 +91,9 @@ class RemoteRunner:
         self._ring: deque = deque(maxlen=1)
         self._cond = threading.Condition()
         self._boxes: list = []
+        # seq -> 那一帧的原始检测（不是最新的那帧，而是**指定那一帧**的）
+        # 播放缓冲用它把框和画面对上：屏幕上那帧是哪一帧，框就用哪一帧的结果。
+        self.history: "OrderedDict[int, list]" = OrderedDict()
         self._boxes_time = 0.0
         self._last_ref = -1
         self._rtt_sum = 0.0
@@ -238,6 +241,7 @@ class RemoteRunner:
         with self._cond:
             if self.sent - self.acked >= self.window:      # 窗口已满：不排队，直接丢
                 self.dropped += 1
+                self.last_submitted_seq = 0                # 这帧没提交，别拿旧 seq 去配
                 return
             if len(self._ring) >= self._ring.maxlen:
                 try:
@@ -250,6 +254,18 @@ class RemoteRunner:
             self.sent += 1                     # 真正入队才算发出
             self._ring.append((self._seq, frame.copy()))
             self._cond.notify()
+
+    def boxes_for(self, seq: int):
+        """取**指定帧**的检测结果（没有就是 None）。播放缓冲做"帧↔框"对齐用。"""
+        with self._lock:
+            entry = self.history.get(int(seq))
+        return entry[0] if entry is not None else None
+
+    def age_of(self, seq: int):
+        """那一帧结果是什么时候到的（调试用）。"""
+        with self._lock:
+            entry = self.history.get(int(seq))
+        return None if entry is None else time.time() - entry[1]
 
     def detect(self, frame) -> list[tuple]:
         """提交一帧，立刻返回"最近一次"的结果（不阻塞主循环）。"""
@@ -299,6 +315,11 @@ class RemoteRunner:
                     # 无条件赋值，于是 500 号结果回来后又会被 480 号覆盖 → 画面跳回旧帧，
                     # 看起来就是"帧是乱的"。这里统一按 ref_seq 单调递增来收。
                     ref = (result or {}).get("ref_seq", seq)
+                    if result is not None:                 # 先按帧号入库（乱序也要）
+                        self.history[ref] = ((boxes if boxes is not None else []),
+                                             time.time())
+                        while len(self.history) > 200:
+                            self.history.popitem(last=False)
                     if result is not None and ref >= self._last_ref:
                         self.result = result
                         self._last_ref = ref
