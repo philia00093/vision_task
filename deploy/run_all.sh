@@ -58,7 +58,7 @@ start_server() {
         extra+=(--stage-weights "$STAGE_WEIGHTS" --stage-zone $STAGE_ZONE --stage-every 10)
     fi
     if [ -n "$HAND_MODEL" ] && [ -f "$HAND_MODEL" ]; then
-        extra+=(--hand-model "$HAND_MODEL" --hand-every 4)
+        extra+=(--hand-model "$HAND_MODEL" --hand-every 1)
     fi
     setsid nohup "$PY" -u "$ROOT/server/run_server.py" \
         --host 0.0.0.0 --port 8080 --imgsz 960 --device 0 --window 16 \
