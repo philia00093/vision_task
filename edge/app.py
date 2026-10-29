@@ -30,6 +30,7 @@ from edge.imaging import contours_to_boxes, prepare_detect_input, save_image, ta
 from edge.parts import PartTracker
 from edge.stage_match import CascadeStageMatcher, SiftStageMatcher, StageMatcher
 from edge.stage_parts import UNKNOWN, PartCounter, stage_from_parts
+from edge.rod_dot import RodDot
 from edge.screw import NG, OK, RUNNING, ScrewTurns
 from edge.stage_worker import StageWorker
 from edge.touch import TouchReader
@@ -379,6 +380,9 @@ def main():
         "blue":  ((95, 110, 90), (130, 255, 255)),
     }
     marker_hsv = MARKER_HSV.get(args.marker) if args.marker != "off" else None
+    rod_dot = RodDot() if args.screw_mode == "dot" else None   # 红点偏心计圈
+    rod_dot_ts = 0.0
+    rod_dot_last = None
     screw = ScrewTurns(min_turns=args.screw_min_turns, target_max=args.screw_max_turns,
                        stop_seconds=args.screw_stop, marker_hsv=marker_hsv)
     if marker_hsv:
@@ -665,6 +669,8 @@ def main():
                                     print(f"[螺丝] 按下结束：{screw.describe()}", flush=True)
                                 else:
                                     screw.start()
+                                    if rod_dot is not None:
+                                        rod_dot.reset()
                                     screw_roi_lock = None       # 本次会话的固定 ROI
                                     print("[螺丝] 开始装配支撑杆：统计圈数，目标 ≥ "
                                           f"{screw.min_turns:g} 圈", flush=True)
@@ -686,6 +692,27 @@ def main():
                                 screw.pivot = (cx_, cy_)
                             elif det["name"] == "support":
                                 screw.rod_point = (cx_, cy_)
+                # ---- 红点偏心计圈：杆子上贴了红点，点绕轴心画圆，角度累加就是圈数 ----
+                if rod_dot is not None and screw is not None:
+                    now_dot = time.time()
+                    if now_dot - rod_dot_ts >= 1.0 / max(1.0, args.rod_fps):
+                        rod_dot_ts = now_dot
+                        rod_roi = tuple(args.rod_roi) if args.rod_roi else None
+                        res = rod_dot.update(view, rod_roi)
+                        rod_dot_last = res
+                        screw._accum = rod_dot.total_deg
+                        screw.turns = rod_dot.turns
+                        if screw.turns >= screw.min_turns and screw.state == RUNNING:
+                            screw.state = OK
+                            print(f"[红点] 够圈数：{rod_dot.describe()}", flush=True)
+                        if now_dot - getattr(rod_dot, "_last_log", 0.0) >= 2.0:
+                            rod_dot._last_log = now_dot
+                            dot_pos = (f" 点({int(rod_dot.dot[0])},{int(rod_dot.dot[1])})"
+                                       f" r{rod_dot_last.get('radius', 0):.0f}"
+                                       f" 轴心({int(rod_dot.center[0])},{int(rod_dot.center[1])})"
+                                       if rod_dot.dot and rod_dot.center else "")
+                            print(f"[红点] {rod_dot.describe()}{dot_pos}", flush=True)
+
                 # 计转交给手部关键点：手掌方向跟着手转，比找杆/框心稳
                 if screw is not None and screw.running and hands_kp:
                     screw.update_hand(hands_kp[0], now=now_stage)
@@ -995,6 +1022,20 @@ def main():
                                        font=label_font, thickness=args.line_width,
                                        top_margin=status_height)
                     # 面积判定写在右上角（不画框，不挡零件）
+                    # ---- 红点：画出来给现场看，顺便标轴心 ----
+                    if rod_dot is not None and rod_dot.dot is not None \
+                            and rod_dot.center is not None:
+                        dx_, dy_ = (int(rod_dot.dot[0]), int(rod_dot.dot[1]))
+                        ccx, ccy = (int(rod_dot.center[0]), int(rod_dot.center[1]))
+                        cv2.circle(view, (dx_, dy_), max(6, args.line_width * 3), (0, 255, 255), 2)
+                        cv2.circle(view, (ccx, ccy), 4, (255, 255, 0), -1)
+                        cv2.line(view, (ccx, ccy), (dx_, dy_), (0, 255, 255), 1)
+                        draw_text_box(view, f"杆子 {rod_dot.turns:.2f} 圈 / 目标 "
+                                            f"{screw.min_turns:g} 圈",
+                                      dx_ + 10, dy_ - 30,
+                                      (0, 220, 0) if rod_dot.turns >= screw.min_turns
+                                      else (0, 200, 255), font=label_font)
+
                     # ---- 屏幕右下角：开始装配支撑杆 按钮（触摸屏点它开始计转）----
                     if screw is not None:
                         vh, vw = view.shape[:2]
