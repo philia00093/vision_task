@@ -189,7 +189,7 @@ DETECT_ARGUMENTS = (
                             help="固定螺丝 ROI（画面坐标）；不给就用装配区里的 base/support 框")),
     (("--rod-roi",), dict(type=int, nargs=4, metavar=("X", "Y", "W", "H"), default=None,
                          help="红点计圈的搜索区（view 坐标）；不给就用装配区外扩一圈")),
-    (("--rod-fps",), dict(type=float, default=12.0,
+    (("--rod-fps",), dict(type=float, default=15.0,
                          help="红点检测每秒跑几次（默认 12，够跟手转）")),
     (("--screw-stop",), dict(type=float, default=0.8,
                              help="停手多少秒算拧完，随后判合格/不合格")),

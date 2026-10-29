@@ -25,13 +25,15 @@
 from __future__ import annotations
 
 import math
+import time
 from collections import deque
 
 import cv2
 import numpy as np
 
-RED_RANGES = (((0, 90, 60), (12, 255, 255)),
-              ((165, 90, 60), (179, 255, 255)))
+# 阈值放宽一点：小点在转动时会拖影、变暗，S/V 卡太死会一帧都检不到
+RED_RANGES = (((0, 70, 45), (14, 255, 255)),
+              ((160, 70, 45), (179, 255, 255)))
 
 
 def red_mask(image: np.ndarray) -> np.ndarray:
@@ -49,19 +51,23 @@ class RodDot:
 
     def __init__(self, min_radius: float = 3.0, max_radius: float = 40.0,
                  jump_deg: float = 120.0, fit_points: int = 40,
-                 gate_px: float = 80.0):
+                 gate_px: float = 80.0, max_speed_rev: float = 4.0):
         self.min_radius = float(min_radius)
         self.max_radius = float(max_radius)
         self.jump_rad = math.radians(abs(float(jump_deg)))
+        self.max_speed = abs(float(max_speed_rev)) * 2.0 * math.pi   # rad/s 上限
         self.gate_px = float(gate_px)
         self.points: deque = deque(maxlen=max(8, int(fit_points)))
         self.seed = None                # 外部给的轴心初值（铜盘框心，比 ROI 中心准）
         self.dot = None                 # 上一帧红点（全画面坐标）
         self.center = None              # 旋转轴心（全画面坐标）
         self.last_angle = None
+        self.last_time = None
+        self.speed = 0.0                # 最近一次的角度速度（deg/s），调试用
         self.total_rad = 0.0            # 解缠后的累计角（有符号）
         self.lost = 0                   # 连续找不到的帧数
         self.hits = 0
+        self.skipped = 0                # 因跳变被丢掉的帧数
 
     # ------------------------------------------------------------ 内部
     def reset(self) -> None:
@@ -69,6 +75,8 @@ class RodDot:
         self.dot = None
         self.center = None
         self.last_angle = None
+        self.last_time = None
+        self.speed = 0.0
         self.total_rad = 0.0
         self.lost = 0
         self.hits = 0
@@ -162,15 +170,23 @@ class RodDot:
         self.center = fitted or fallback
         cx, cy = self.center
         angle = math.atan2(self.dot[1] - cy, self.dot[0] - cx)
-        if self.last_angle is not None:
+        now = time.time()
+        dt = None if self.last_time is None else max(1e-3, now - self.last_time)
+        if self.last_angle is not None and dt is not None:
             delta = angle - self.last_angle
             while delta > math.pi:
                 delta -= 2.0 * math.pi
             while delta < -math.pi:
                 delta += 2.0 * math.pi
-            if abs(delta) <= self.jump_rad:          # 认错点的跳变丢掉
+            # 门限跟着帧间隔走：转得再快，只要不超过 max_speed 就认
+            limit = min(self.jump_rad, self.max_speed * dt)
+            if abs(delta) <= max(limit, math.radians(8.0)):
                 self.total_rad += delta
+                self.speed = math.degrees(delta) / dt
+            else:
+                self.skipped += 1
         self.last_angle = angle
+        self.last_time = now
         return {"ok": True, "dot": self.dot, "center": self.center,
                 "angle_deg": math.degrees(angle),
                 "total_deg": math.degrees(self.total_rad),
@@ -187,4 +203,5 @@ class RodDot:
 
     def describe(self) -> str:
         return (f"红点 {self.hits} 帧 | 累计 {math.degrees(self.total_rad):+.0f}° "
-                f"= {self.turns:.2f} 圈 | 连续丢失 {self.lost}")
+                f"= {self.turns:.2f} 圈 | 丢失 {self.lost} | 跳变丢弃 {self.skipped}"
+                f" | 角速度 {self.speed:+.0f}°/s")

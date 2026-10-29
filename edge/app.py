@@ -692,29 +692,6 @@ def main():
                                 screw.pivot = (cx_, cy_)
                             elif det["name"] == "support":
                                 screw.rod_point = (cx_, cy_)
-                # ---- 红点偏心计圈：杆子上贴了红点，点绕轴心画圆，角度累加就是圈数 ----
-                if rod_dot is not None and screw is not None:
-                    now_dot = time.time()
-                    if now_dot - rod_dot_ts >= 1.0 / max(1.0, args.rod_fps):
-                        rod_dot_ts = now_dot
-                        rod_roi = tuple(args.rod_roi) if args.rod_roi else None
-                        # 轴心初值用装配区里 base（那个铜盘）的框心，比 ROI 中心准得多
-                        seed = screw.pivot if screw is not None else None
-                        res = rod_dot.update(view, rod_roi, seed_center=seed)
-                        rod_dot_last = res
-                        screw._accum = rod_dot.total_deg
-                        screw.turns = rod_dot.turns
-                        if screw.turns >= screw.min_turns and screw.state == RUNNING:
-                            screw.state = OK
-                            print(f"[红点] 够圈数：{rod_dot.describe()}", flush=True)
-                        if now_dot - getattr(rod_dot, "_last_log", 0.0) >= 2.0:
-                            rod_dot._last_log = now_dot
-                            dot_pos = (f" 点({int(rod_dot.dot[0])},{int(rod_dot.dot[1])})"
-                                       f" r{rod_dot_last.get('radius', 0):.0f}"
-                                       f" 轴心({int(rod_dot.center[0])},{int(rod_dot.center[1])})"
-                                       if rod_dot.dot and rod_dot.center else "")
-                            print(f"[红点] {rod_dot.describe()}{dot_pos}", flush=True)
-
                 # 计转交给手部关键点：手掌方向跟着手转，比找杆/框心稳
                 if screw is not None and screw.running and hands_kp:
                     screw.update_hand(hands_kp[0], now=now_stage)
@@ -986,6 +963,29 @@ def main():
                         if last_matched is not None:
                             detections = last_matched
                         sync_misses += 1
+
+                # ---- 红点偏心计圈：杆子上贴了红点，点绕轴心画圆，角度累加就是圈数 ----
+                if rod_dot is not None and screw is not None:
+                    now_dot = time.time()
+                    if now_dot - rod_dot_ts >= 1.0 / max(1.0, args.rod_fps):
+                        rod_dot_ts = now_dot
+                        rod_roi = tuple(args.rod_roi) if args.rod_roi else None
+                        # 轴心初值用装配区里 base（那个铜盘）的框心，比 ROI 中心准得多
+                        seed = screw.pivot if screw is not None else None
+                        res = rod_dot.update(view, rod_roi, seed_center=seed)
+                        rod_dot_last = res
+                        screw._accum = rod_dot.total_deg
+                        screw.turns = rod_dot.turns
+                        if screw.turns >= screw.min_turns and screw.state == RUNNING:
+                            screw.state = OK
+                            print(f"[红点] 够圈数：{rod_dot.describe()}", flush=True)
+                        if now_dot - getattr(rod_dot, "_last_log", 0.0) >= 2.0:
+                            rod_dot._last_log = now_dot
+                            dot_pos = (f" 点({int(rod_dot.dot[0])},{int(rod_dot.dot[1])})"
+                                       f" r{rod_dot_last.get('radius', 0):.0f}"
+                                       f" 轴心({int(rod_dot.center[0])},{int(rod_dot.center[1])})"
+                                       if rod_dot.dot and rod_dot.center else "")
+                            print(f"[红点] {rod_dot.describe()}{dot_pos}", flush=True)
 
                 if detect:
                     # 先占住状态栏区域拿到高度，区域标签与右上角提示据此避开顶部
