@@ -1,4 +1,0 @@
-base
-support
-compass
-top

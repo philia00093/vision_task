@@ -96,6 +96,16 @@ def commit_stage(history, window, now):
     return winner
 
 
+class _NullStageWorker:
+    """本地阶段匹配器没启用时的占位：不产结果，电脑端阶段模型仍然生效。"""
+
+    def drain(self):
+        return []
+
+    def submit(self, *args, **kwargs):
+        return None
+
+
 def _follow(base: list, pred: list, limit: float = 1.2) -> list:
     """用本帧的预测框替换上一帧的实测框，但只限"离得不远"的那几个。
 
@@ -318,6 +328,7 @@ def main():
                 print(f"         参考图目录：{stage_dir}")
                 print("         平铺 4 张（文件名=阶段名）或每阶段建子目录放多张样本即可启用")
                 stage = None
+                stage_worker = _NullStageWorker()   # 本地匹配器不启用，但电脑端阶段模型还在
             else:
                 window = (f"--stage-region {' '.join(str(v) for v in args.stage_region)}"
                           if args.stage_region else "锁定后的装配区框")
@@ -822,7 +833,7 @@ def main():
                 # 只裁装配区那一块图，跟零件框无关；用时间而不是帧数当间隔，
                 # 帧率高低都不会让识别变得忽快忽慢。
                 # 「连续 1 秒识别」：窗口内的判定要**多数一致**才采纳，单帧抖一下不会翻牌。
-                if detect and stage is not None:
+                if detect and stage_worker is not None:
                     now_stage = time.time()
                     # 后台线程算完的结果先收进来（不阻塞主循环）
                     for _stamp, _fresh in stage_worker.drain():

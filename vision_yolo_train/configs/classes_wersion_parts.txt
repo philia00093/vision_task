@@ -1,5 +1,0 @@
-# 零件类别（与采集图片前缀一致：base_*/support_*/compass_*/top_*）
-base       # 底部（采集前缀 base）
-support    # 支撑柱（采集前缀 support）
-compass    # 罗盘（采集前缀 compass）
-top        # 盘/顶盖（采集前缀 top）

@@ -38,12 +38,7 @@ say "同步代码"
 rsync -a --delete --exclude __pycache__ "$ROOT/edge/" "$PI_USER@$PI_HOST:$PI_DIR/edge/" || die "同步 edge/ 失败"
 rsync -a "$ROOT/protocol.py" "$PI_USER@$PI_HOST:$PI_DIR/" || die "同步 protocol.py 失败"
 
-# ---------- 3. 阶段参考图 ----------
-say "同步阶段样本"
-rsync -a --delete "$ROOT/vision_yolo_train/images/steps/" \
-      "$PI_USER@$PI_HOST:$PI_DIR/vision_yolo_train/images/steps/" || die "同步样本失败"
-
-# ---------- 4. 中文字体（缺了屏上一个字都不显示） ----------
+# ---------- 3. 中文字体（缺了屏上一个字都不显示） ----------
 if ssh_pi '[ -f /usr/share/fonts/truetype/wqy/wqy-zenhei.ttc ]'; then
     say "中文字体已就绪"
 else
@@ -52,7 +47,7 @@ else
         || say "  字体装失败，屏上标签会退回英文兜底（不影响识别）"
 fi
 
-# ---------- 5. 启动脚本参数（旧版是 --stage-interval，新版按秒） ----------
+# ---------- 4. 启动脚本参数（旧版是 --stage-interval，新版按秒） ----------
 if ssh_pi "grep -q 'stage-period' $START_SH"; then
     say "启动脚本已是新参数"
 else
