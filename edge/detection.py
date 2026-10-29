@@ -66,7 +66,9 @@ class RemoteRunner:
     """
 
     def __init__(self, url, token="", quality=80, timeout=1.0, stale_after=1.5,
-                 wire_format=DEFAULT_WIRE, window=6):
+                 wire_format=DEFAULT_WIRE, window=6, sender_proc=True):
+        self.sender_proc = bool(sender_proc)
+        self.sender = None                    # 独立进程发送器（见 sender_proc.py）
         self.url = url.rstrip("/")
         self.token = token
         self.quality = int(quality)
@@ -118,6 +120,18 @@ class RemoteRunner:
         self.window = max(1, min(server_window, self.window_max))
         self._ring = deque(maxlen=max(2, self.window * 2))
         self._started = True
+        if self.sender_proc and self.wire_format == "binary":
+            # 独立进程发送：JPEG 编码 + HTTP 收发都在子进程里，主循环不再抢 GIL
+            try:
+                from edge.sender_proc import ProcessSender
+                self.sender = ProcessSender(self.url, token=self.token,
+                                            quality=self.quality, window=self.window,
+                                            wire_format=self.wire_format,
+                                            timeout=self.timeout)
+                return True
+            except Exception as error:               # 起不来就退回本进程发送
+                print(f"[发送] 独立进程启动失败，退回本进程发送：{error}", flush=True)
+                self.sender = None
         for index in range(self.window):
             thread = threading.Thread(target=self._worker, args=(index,),
                                       name=f"infer-http-{index}", daemon=True)
@@ -127,6 +141,8 @@ class RemoteRunner:
 
     @property
     def ready(self) -> bool:
+        if self.sender is not None and not self.sender.ready:
+            return False
         """能不能干活 = 发送线程开起来了，**不看 error**。
 
         error 是"上一次请求失败了"的瞬时状态。以前这里是 `_started and not error`，
@@ -148,6 +164,12 @@ class RemoteRunner:
         return self.start()
 
     def close(self) -> None:
+        if self.sender is not None:
+            try:
+                self.sender.close()
+            except Exception:
+                pass
+            self.sender = None
         self._stop.set()
         with self._cond:
             self._cond.notify_all()
@@ -230,6 +252,37 @@ class RemoteRunner:
                 f"丢 {self.dropped} 错 {self.errors} | 往返 {self.round_trip_ms:.0f}ms")
 
     # ------------------------------------------------------------ 主循环接口
+    def _submit_proc(self, frame) -> None:
+        """交给独立进程：只做一次共享内存拷贝，编码和网络都在子进程。"""
+        seq = self.sender.put(frame)
+        with self._cond:
+            self.last_submitted_seq = seq
+            self.sent += 1 if seq else 0
+            if not seq:
+                self.dropped += 1
+
+    def _drain_proc(self) -> None:
+        """把子进程回来的结果收进来（保持和本进程发送完全一致的状态）。"""
+        for ref_seq, boxes, hand_box, hand, cost_ms, rtt in self.sender.drain():
+            with self._lock:
+                self.acked += 1
+                self._rtt_sum += rtt
+                self._rtt_n += 1
+                self.round_trip_ms = self._rtt_sum / self._rtt_n
+                self.history[ref_seq] = (boxes, time.time())
+                while len(self.history) > 200:
+                    self.history.popitem(last=False)
+                if ref_seq >= self._last_ref:
+                    self.result = {"ref_seq": ref_seq, "hand_box": hand_box,
+                                   "hand": hand, "cost_ms": cost_ms}
+                    self._last_ref = ref_seq
+                    self._boxes = boxes
+                    self._boxes_time = time.time()
+                    self.last_cost_ms = float(cost_ms or 0.0)
+                else:
+                    self.stale_results += 1
+                self.error = ""
+
     def submit(self, frame) -> None:
         """把一帧塞进环形缓冲。
 
@@ -238,6 +291,18 @@ class RemoteRunner:
           2. 环形缓冲满了 → 丢最旧的。
         丢掉的帧计入 dropped，界面上能看出"这台网络吃不下 30 帧"。
         """
+        if self.sender is not None:
+            self._submit_proc(frame)
+            if self.sender is not None and self.sender.closed:
+                # 子进程没起来：退回本进程发送，别让整条链路空转
+                print("[发送] 子进程不可用，退回本进程发送", flush=True)
+                self.sender = None
+                for index in range(self.window):
+                    thread = threading.Thread(target=self._worker, args=(index,),
+                                              name=f"infer-http-{index}", daemon=True)
+                    thread.start()
+                    self._workers.append(thread)
+            return
         with self._cond:
             if self.sent - self.acked >= self.window:      # 窗口已满：不排队，直接丢
                 self.dropped += 1
@@ -271,6 +336,8 @@ class RemoteRunner:
         """提交一帧，立刻返回"最近一次"的结果（不阻塞主循环）。"""
         if not self._started and not self.ensure_started():
             return []
+        if self.sender is not None:
+            self._drain_proc()
         self.submit(frame)
         with self._lock:
             boxes = list(self._boxes)
