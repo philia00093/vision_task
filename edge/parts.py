@@ -56,6 +56,8 @@ class PartTracker:
         self.error = ""
         self.last_cost_ms = 0.0                # 上次 YOLO 的耗时，用来在状态栏显示
         self.last_seq = 0                      # 最近一次提交给电脑的帧号（远程后端才有）
+        self._hold: dict[int, tuple] = {}      # 类别 → (框, 置信度, 时间)：短时兜底用
+        self.hold_seconds = 0.4                # 单帧漏检/回包丢了，框最多多留这么久
         self.frame_size: tuple | None = None   # 最近一次检测帧的尺寸（给卡尔曼做夹取用）
 
     @property
@@ -288,9 +290,13 @@ class PartTracker:
 
         为什么需要它：屏幕上放的是 20 帧前的画面（播放缓冲），而卡尔曼是把
         "现在"外推出来的。外推用的检测比画面本身还晚 0.3~0.9 秒（网络+推理往返），
-        零件一动，框就跑到零件前面去了 —— 看起来就是"跟踪不准"。
-        这里改成：那一帧是几号，就用几号那一帧的结果，框和画面严格对齐；
-        只有结果还没回来（往返比缓冲还慢）时才退回外推。
+        零件一动，框就跑到零件前面去 —— 看起来就是"跟踪不准"。
+        这里改成：那一帧是几号，就用几号那一帧的结果，框和画面严格对齐。
+
+        为什么还要"兜底"：这一帧模型漏检、或者电脑那边的结果被丢了，返回的就是
+        空列表 —— 直接照搬的话框会闪一下没掉（看起来就是"跟踪丢"）。所以按类别
+        记住上一次的框，`hold_seconds` 内继续显示（标成 predicted），
+        超过就真的收掉（零件确实被拿走了）。
         """
         remote_runner = self.runner.remote
         if remote_runner is None or not seq:
@@ -298,37 +304,65 @@ class PartTracker:
         raw = remote_runner.boxes_for(int(seq))
         if raw is None:                      # 还没有这一帧的记录（不是"这一帧没东西"）
             return None
+
+        now = time.time()
         inverse = 1.0 / scale if scale else 1.0
         dx, dy = float(offset[0]), float(offset[1])
         rect = self.exclude_rect
-        out: list[dict] = []
+
+        # 1) 这一帧真检出的：每类留置信度最高的那个（模型坐标 → 原画面坐标）
+        found: dict[int, tuple] = {}
         for x1, y1, x2, y2, cls_id, conf in raw:
-            if int(cls_id) == 4:                 # 手框：不显示
+            cls_id = int(cls_id)
+            if cls_id == 4:                  # 手框：不显示
                 continue
             box = (x1 * inverse + dx, y1 * inverse + dy,
                    x2 * inverse + dx, y2 * inverse + dy)
+            if cls_id not in found or conf > found[cls_id][1]:
+                found[cls_id] = (box, float(conf))
+
+        def in_zone(box) -> bool:
+            if rect is None:
+                return False
+            ex1, ey1, ex2, ey2 = rect
             cx, cy = (box[0] + box[2]) / 2.0, (box[1] + box[3]) / 2.0
-            if rect is not None:
-                ex1, ey1, ex2, ey2 = rect
-                if ex1 <= cx <= ex2 and ey1 <= cy <= ey2:
-                    continue                     # 装配区里的零件不画
-            # 轨迹线借用"当前离它最近的同类别轨迹"，不然前后帧之间轨迹会断
-            trail, track_id = None, -1
-            best = None
-            for tid, track in self.tracks.items():
-                if track.cls_id != int(cls_id):
-                    continue
-                tx, ty = track.center
-                d2 = (tx - cx) ** 2 + (ty - cy) ** 2
-                if best is None or d2 < best:
-                    best, track_id = d2, tid
-            if track_id >= 0:
-                trail = self.trails.get(track_id)
-            out.append({"box": (int(box[0]), int(box[1]), int(box[2]), int(box[3])),
-                        "name": self.names.get(int(cls_id), f"cls{int(cls_id)}"),
-                        "conf": float(conf), "track_id": track_id,
-                        "trail": trail, "predicted": False})
+            return ex1 <= cx <= ex2 and ey1 <= cy <= ey2
+
+        out: list[dict] = []
+        for cls_id, (box, conf) in found.items():
+            if in_zone(box):
+                continue                     # 装配区里的零件不画
+            self._hold[cls_id] = (box, conf, now)
+            out.append(self._make_item(cls_id, box, conf, predicted=False))
+
+        # 2) 这一帧没有、但刚还看到的：短时间沿用，别闪
+        for cls_id, (box, conf, stamp) in list(self._hold.items()):
+            if cls_id in found:
+                continue
+            if now - stamp <= self.hold_seconds:
+                out.append(self._make_item(cls_id, box, conf, predicted=True))
+            else:
+                del self._hold[cls_id]
         return out
+
+    def _make_item(self, cls_id: int, box, conf: float, predicted: bool = False) -> dict:
+        """组一条可绘制的记录；轨迹线借最近同类别轨迹，免得前后帧之间断线。"""
+        cx, cy = (box[0] + box[2]) / 2.0, (box[1] + box[3]) / 2.0
+        trail, track_id = None, -1
+        best = None
+        for tid, track in self.tracks.items():
+            if track.cls_id != int(cls_id):
+                continue
+            tx, ty = track.center
+            d2 = (tx - cx) ** 2 + (ty - cy) ** 2
+            if best is None or d2 < best:
+                best, track_id = d2, tid
+        if track_id >= 0:
+            trail = self.trails.get(track_id)
+        return {"box": (int(box[0]), int(box[1]), int(box[2]), int(box[3])),
+                "name": self.names.get(int(cls_id), f"cls{int(cls_id)}"),
+                "conf": float(conf), "track_id": track_id,
+                "trail": trail, "predicted": bool(predicted)}
 
     def _tick_tracked(self) -> list[dict]:
         """每一帧都调用：把轨迹推进到当前时刻，返回可以立刻绘制的列表。

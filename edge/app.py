@@ -95,6 +95,32 @@ def commit_stage(history, window, now):
     return winner
 
 
+def _follow(base: list, pred: list, limit: float = 1.2) -> list:
+    """用本帧的预测框替换上一帧的实测框，但只限"离得不远"的那几个。
+
+    帧↔框对齐命中不了的时候（链路抖动、结果没回来），如果死守上一帧的框，
+    零件一动框就掉队；直接换成预测又会偶发跑飞。这里取中间：预测位置离上帧
+    实测位置在 1.2 个框对角线以内就用预测（平滑跟住），超了就还守上帧。
+    """
+    by_name = {item.get("name"): item for item in pred if item.get("name")}
+    out = []
+    for item in base:
+        other = by_name.get(item.get("name"))
+        if other is None:
+            out.append(item)
+            continue
+        bx1, by1, bx2, by2 = item["box"]
+        px1, py1, px2, py2 = other["box"]
+        diag = (((bx2 - bx1) ** 2 + (by2 - by1) ** 2) ** 0.5) or 1.0
+        dx = (px1 + px2 - bx1 - bx2) / 2.0
+        dy = (py1 + py2 - by1 - by2) / 2.0
+        if (dx * dx + dy * dy) ** 0.5 <= diag * limit:
+            out.append(other)
+        else:
+            out.append(item)
+    return out
+
+
 def main():
     args = build_parser().parse_args()
     detect = not args.no_detect
@@ -386,6 +412,8 @@ def main():
     material_occluded = False        # 上一帧物料区是否被遮
     sync_hits = sync_misses = 0
     sync_matched = sync_fallback = 0   # 帧↔框对齐命中 / 退回外推
+    sync_noseq = sync_nohit = 0        # 这帧没提交 / 结果还没回来
+    dbg_dropped = dbg_sent = 0
     display_stamp = 0.0
     display_seq = -1                 # 已经显示到哪一帧：只许往前，不许倒退
     play_seq = 0                     # 入队用的本地帧号（不依赖网络是否发出去）
@@ -912,10 +940,16 @@ def main():
                             last_matched = matched
                             sync_matched += 1
                         elif last_matched is not None:
-                            detections = last_matched     # 这帧没提交/结果没回：沿用上一帧
+                            # 这帧没提交/结果没回：用这一帧的卡尔曼预测（会跟着零件走），
+                            # 但不能离上一帧的实测位置太远（防外推跑飞）
+                            detections = _follow(last_matched, detections)
                             sync_fallback += 1
                         else:
                             sync_fallback += 1
+                        if not frame_seq:
+                            sync_noseq += 1
+                        elif matched is None:
+                            sync_nohit += 1
                         last_display = entry
                         sync_hits += 1
                     elif last_display is not None:
@@ -1040,7 +1074,16 @@ def main():
                                if (sync_hits + sync_misses) else 0.0)
                         align = (sync_matched / max(sync_matched + sync_fallback, 1) * 100.0
                                  if (sync_matched + sync_fallback) else 0.0)
-                        sync_matched = sync_fallback = 0      # 只统计这一段的对齐率
+                        dbg = ""
+                        if tracker_parts is not None and tracker_parts.runner.remote is not None:
+                            rr = tracker_parts.runner.remote
+                            dn = rr.dropped - dbg_dropped
+                            sn = rr.sent - dbg_sent
+                            dbg = f" | 这5秒 发 {sn} 丢 {dn} | last_seq {tracker_parts.last_seq}"
+                            dbg_dropped, dbg_sent = rr.dropped, rr.sent
+                        print(f"[对齐] 命中 {sync_matched} 无seq {sync_noseq} 无结果 {sync_nohit}{dbg}",
+                              flush=True)
+                        sync_matched = sync_fallback = sync_noseq = sync_nohit = 0
                         print(f"[fps] 主循环 {fps_now:.1f} fps | 画面滞后 {lag_ms:.0f}ms"
                               f"（含网络往返）{net} | 同步命中 {hit:.0f}%"
                               f" | 帧框对齐 {align:.0f}%"

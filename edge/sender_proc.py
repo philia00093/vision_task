@@ -165,7 +165,7 @@ class ProcessSender:
         self.wire_format = wire_format
         self.timeout = float(timeout)
         # 槽数要 >= 线程数，否则 worker 抢不到帧；留 4 个余量做流水线
-        self.slots = max(1, min(int(slots) or (self.window + 6), MAX_SLOTS))
+        self.slots = max(1, min(int(slots) or (self.window + 2), MAX_SLOTS))
         self.shape = None
         self.shm = None
         self.buffer = None
