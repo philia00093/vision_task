@@ -55,6 +55,7 @@ class RodDot:
         self.jump_rad = math.radians(abs(float(jump_deg)))
         self.gate_px = float(gate_px)
         self.points: deque = deque(maxlen=max(8, int(fit_points)))
+        self.seed = None                # 外部给的轴心初值（铜盘框心，比 ROI 中心准）
         self.dot = None                 # 上一帧红点（全画面坐标）
         self.center = None              # 旋转轴心（全画面坐标）
         self.last_angle = None
@@ -107,7 +108,7 @@ class RodDot:
         return out
 
     # ------------------------------------------------------------ 对外
-    def update(self, image: np.ndarray, roi=None) -> dict:
+    def update(self, image: np.ndarray, roi=None, seed_center=None) -> dict:
         """喂一帧（BGR），返回 {'ok','dot','center','angle_deg','total_deg','turns'}。
 
         roi 是 (x, y, w, h)（全画面坐标）；给了就只看这一块，省算力也更稳。
@@ -150,8 +151,15 @@ class RodDot:
         self.hits += 1
         self.lost = 0
 
-        fallback = (ox + crop.shape[1] / 2.0, oy + crop.shape[0] / 2.0)
-        self.center = self._fit_center(fallback) or fallback
+        if seed_center is not None:
+            self.seed = (float(seed_center[0]), float(seed_center[1]))
+        fallback = self.seed or (ox + crop.shape[1] / 2.0, oy + crop.shape[0] / 2.0)
+        fitted = self._fit_center(fallback)
+        if fitted is not None and self.seed is not None:
+            # 拟合出来的圆心离"盘心"太远，说明点还没转开/认到别的点，别跟着跑
+            if ((fitted[0] - self.seed[0]) ** 2 + (fitted[1] - self.seed[1]) ** 2) ** 0.5 > 60:
+                fitted = None
+        self.center = fitted or fallback
         cx, cy = self.center
         angle = math.atan2(self.dot[1] - cy, self.dot[0] - cx)
         if self.last_angle is not None:

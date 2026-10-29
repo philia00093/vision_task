@@ -698,7 +698,9 @@ def main():
                     if now_dot - rod_dot_ts >= 1.0 / max(1.0, args.rod_fps):
                         rod_dot_ts = now_dot
                         rod_roi = tuple(args.rod_roi) if args.rod_roi else None
-                        res = rod_dot.update(view, rod_roi)
+                        # 轴心初值用装配区里 base（那个铜盘）的框心，比 ROI 中心准得多
+                        seed = screw.pivot if screw is not None else None
+                        res = rod_dot.update(view, rod_roi, seed_center=seed)
                         rod_dot_last = res
                         screw._accum = rod_dot.total_deg
                         screw.turns = rod_dot.turns
